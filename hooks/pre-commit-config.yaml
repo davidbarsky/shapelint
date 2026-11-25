@@ -1,0 +1,9 @@
+# For the pre-commit/prek framework (also what jj-hooks runs on `jj` pushes).
+repos:
+  - repo: local
+    hooks:
+      - id: shapelint
+        name: shapelint
+        entry: shapelint --fail-on mechanical
+        language: system
+        files: '(\.rs|\.toml|/BUCK|/BUCK\.v2|/TARGETS|/BUILD(\.bazel)?|\.bzl)$'

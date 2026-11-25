@@ -1,0 +1,3 @@
+# jj has no commit hooks; add to `jj config edit --repo` and run `jj lint` (or chain it into your own aliases).
+[aliases]
+lint = ["util", "exec", "--", "shapelint", "changed", "--fail-on", "mechanical"]
