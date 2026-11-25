@@ -284,9 +284,10 @@ impl<'g> Evaluator<'_, '_, 'g> {
             }
         }
         let mut owners = Vec::new();
-        for (&owner, productions) in context.productions {
+        for (&owner, facts) in context.owners {
             if let Some(_) =
-                productions
+                facts
+                    .productions
                     .iter()
                     .find(|production| match production.production_kind {
                         ProductionKind::Construction => true,
@@ -305,12 +306,13 @@ impl<'g> Evaluator<'_, '_, 'g> {
                 continue;
             };
             let adt = tcx.adt_def(owner);
-            if !adt.is_struct() || context.mutations.contains(&owner) {
+            let facts = &context.owners[&owner];
+            if !adt.is_struct() || facts.mutation.is_some() {
                 continue;
             }
             let fields = &adt.non_enum_variant().fields;
             let args = ty::GenericArgs::identity_for_item(tcx, owner);
-            let productions = &context.productions[&owner];
+            let productions = &facts.productions;
             let constructions =
                 productions
                     .iter()

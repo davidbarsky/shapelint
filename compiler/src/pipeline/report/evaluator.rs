@@ -541,6 +541,38 @@ enum ReportSupport<'g> {
     Unknown,
 }
 
+#[derive(Default)]
+struct ConditionFacts<'g> {
+    support: Option<ReportSupport<'g>>,
+    certificate: Option<Option<ConditionId<'g>>>,
+    context: Option<Option<()>>,
+}
+
+#[derive(Default)]
+struct ApplicabilityFacts<'g> {
+    support: Option<ReportSupport<'g>>,
+    no_proven_guard_path: Option<Option<()>>,
+    impossible: Option<Option<()>>,
+}
+
+#[derive(Default)]
+struct PlanFacts<'g> {
+    obligation: Option<Option<(Obligation<'g>, RequirementId<'g>)>>,
+    inputs: Option<Inputs<'g>>,
+}
+
+#[derive(Default)]
+struct PlanSequenceFacts<'g> {
+    factors: Option<RequirementGroup<'g>>,
+    inputs: Option<Inputs<'g>>,
+}
+
+#[derive(Default)]
+struct DefinitionActivity<'g> {
+    active: Option<QueryId>,
+    generics: Option<FxIndexMap<GenericsId<'g>, usize>>,
+}
+
 pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     pub work: crate::contracts::Work,
     tcx: TyCtxt<'tcx>,
@@ -556,18 +588,16 @@ pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     cache: Cache<'g>,
     queries: Vec<Activation<'g>>,
     dependencies: Dependencies,
-    active: FxHashMap<DefId, QueryId>,
-    generics: FxHashMap<DefId, FxIndexMap<GenericsId<'g>, usize>>,
+    definition_activity: FxHashMap<DefId, DefinitionActivity<'g>>,
     returning: Vec<usize>,
     pub(crate) recursion: Recursion,
     applicability: Applicabilities<'g>,
-    applicability_impossible: FxHashMap<ApplicabilityId<'g>, Option<()>>,
-    applicability_no_proven_guard_paths: FxHashMap<ApplicabilityId<'g>, Option<()>>,
+    applicability_facts: FxHashMap<ApplicabilityId<'g>, ApplicabilityFacts<'g>>,
     report_guard_sequence_blockers: FxHashMap<Sequence<'g, ConditionId<'g>>, Option<()>>,
     requirement_values: FxIndexSet<RequirementCore<'g>>,
     requirement_inputs: FxHashMap<RequirementId<'g>, Inputs<'g>>,
-    plan_inputs: FxHashMap<RequirementPlanId<'g>, Inputs<'g>>,
-    plan_sequence_inputs: FxHashMap<Sequence<'g, RequirementPlanId<'g>>, Inputs<'g>>,
+    plan_facts: FxHashMap<RequirementPlanId<'g>, PlanFacts<'g>>,
+    plan_sequence_facts: FxHashMap<Sequence<'g, RequirementPlanId<'g>>, PlanSequenceFacts<'g>>,
     requirement_plans: FxIndexSet<RequirementPlan<'g>>,
     requirement_consumers: FxHashMap<crate::contracts::summaries::ConsumerId<'g>, Option<Span>>,
     requirement_sequences: crate::sequence::Sequences<'g, RequirementPlanId<'g>>,
@@ -576,9 +606,6 @@ pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     target_lists: crate::sequence::Sequences<'g, (InstanceId<'g>, Sequence<'g, ExprId<'g>>)>,
     requirement_sets: Sets<'g, RequirementPlanId<'g>>,
     obligation_sets: Sets<'g, Obligation<'g>>,
-    requirement_plan_obligations:
-        FxHashMap<RequirementPlanId<'g>, Option<(Obligation<'g>, RequirementId<'g>)>>,
-    requirement_factors: FxHashMap<Sequence<'g, RequirementPlanId<'g>>, RequirementGroup<'g>>,
     requirement_filters: FxHashMap<
         (
             Sequence<'g, RequirementPlanId<'g>>,
@@ -589,9 +616,7 @@ pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     requirement_candidates: FxHashSet<DefId>,
     arena_steps: FxHashMap<DefId, Option<()>>,
     sharing_modes: FxHashMap<(RequirementCore<'g>, Sequence<'g, ConditionId<'g>>), Sharing>,
-    report_condition_contexts: FxHashMap<ConditionId<'g>, Option<()>>,
-    report_condition_certificates: FxHashMap<ConditionId<'g>, Option<ConditionId<'g>>>,
-    report_condition_supports: FxHashMap<ConditionId<'g>, ReportSupport<'g>>,
+    report_condition_facts: FxHashMap<ConditionId<'g>, ConditionFacts<'g>>,
     report_expression_supports: FxHashMap<ExprId<'g>, ReportSupport<'g>>,
     report_support_location_cache: FxHashMap<ReportLocation<'g>, Rc<ReportSupportTree<'g>>>,
     report_support_empty_node: Rc<ReportSupportTree<'g>>,
@@ -600,7 +625,6 @@ pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     report_support_contains_location_cache: FxHashMap<(usize, ReportLocation<'g>), Option<()>>,
     report_support_tree_overlap_cache: FxHashMap<(usize, usize), Option<()>>,
     report_support_containment_cache: FxHashMap<(usize, usize), Option<()>>,
-    report_applicability_supports: FxHashMap<ApplicabilityId<'g>, ReportSupport<'g>>,
     report_guard_projection_cache:
         FxHashMap<(usize, Sequence<'g, ConditionId<'g>>), Option<Sequence<'g, ConditionId<'g>>>>,
     report_uniform_contexts:
@@ -644,18 +668,16 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             cache: Cache::default(),
             queries: Vec::new(),
             dependencies: Dependencies::default(),
-            active: FxHashMap::default(),
-            generics: FxHashMap::default(),
+            definition_activity: FxHashMap::default(),
             returning: Vec::new(),
             recursion: Recursion::default(),
             applicability: Applicabilities::default(),
-            applicability_impossible: FxHashMap::default(),
-            applicability_no_proven_guard_paths: FxHashMap::default(),
+            applicability_facts: FxHashMap::default(),
             report_guard_sequence_blockers: FxHashMap::default(),
             requirement_values: FxIndexSet::default(),
             requirement_inputs: FxHashMap::default(),
-            plan_inputs: FxHashMap::default(),
-            plan_sequence_inputs: FxHashMap::default(),
+            plan_facts: FxHashMap::default(),
+            plan_sequence_facts: FxHashMap::default(),
             requirement_plans: FxIndexSet::default(),
             requirement_consumers: FxHashMap::default(),
             requirement_sequences: crate::sequence::Sequences::new(),
@@ -664,15 +686,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             target_lists: crate::sequence::Sequences::new(),
             requirement_sets: Sets::new(),
             obligation_sets: Sets::new(),
-            requirement_plan_obligations: FxHashMap::default(),
-            requirement_factors: FxHashMap::default(),
             requirement_filters: FxHashMap::default(),
             requirement_candidates: FxHashSet::default(),
             arena_steps: FxHashMap::default(),
             sharing_modes: FxHashMap::default(),
-            report_condition_contexts: FxHashMap::default(),
-            report_condition_certificates: FxHashMap::default(),
-            report_condition_supports: FxHashMap::default(),
+            report_condition_facts: FxHashMap::default(),
             report_expression_supports: FxHashMap::default(),
             report_support_location_cache: FxHashMap::default(),
             report_support_empty_node: Rc::new(ReportSupportTree::Empty),
@@ -681,7 +699,6 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             report_support_contains_location_cache: FxHashMap::default(),
             report_support_tree_overlap_cache: FxHashMap::default(),
             report_support_containment_cache: FxHashMap::default(),
-            report_applicability_supports: FxHashMap::default(),
             report_guard_projection_cache: FxHashMap::default(),
             report_uniform_contexts: FxHashMap::default(),
             report_outcome_certificates: FxHashMap::default(),
@@ -1203,7 +1220,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn => {}
             _ => return None,
         }
-        if let Some(contexts) = self.generics.get(&instance.def) {
+        if let Some(DefinitionActivity {
+            generics: Some(contexts),
+            ..
+        }) = self.definition_activity.get(&instance.def)
+        {
             match (contexts.len(), contexts.keys().next()) {
                 (1, Some(arguments)) if *arguments == instance.args => {}
                 _ => return None,
@@ -1667,7 +1688,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             let id = match frame {
                 Traversal::Visit(id) | Traversal::Finish(id) => id,
             };
-            if self.applicability_impossible.contains_key(&id) {
+            if let Some(ApplicabilityFacts {
+                impossible: Some(_),
+                ..
+            }) = self.applicability_facts.get(&id)
+            {
                 continue;
             }
             let node = self.applicability[id];
@@ -1690,7 +1715,9 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                         Truth::Proven | Truth::Unknown(_) => None,
                     }
                 }
-                Applicability::Prefix(guards, child) => match self.applicability_impossible[&child]
+                Applicability::Prefix(guards, child) => match self.applicability_facts[&child]
+                    .impossible
+                    .expect("pruned child applicability")
                 {
                     Some(()) => Some(()),
                     None => {
@@ -1702,14 +1729,18 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                     }
                 },
                 Applicability::Either(left, right) => match (
-                    self.applicability_impossible[&left],
-                    self.applicability_impossible[&right],
+                    self.applicability_facts[&left]
+                        .impossible
+                        .expect("pruned left applicability"),
+                    self.applicability_facts[&right]
+                        .impossible
+                        .expect("pruned right applicability"),
                 ) {
                     (Some(()), Some(())) => Some(()),
                     (None, _) | (_, None) => None,
                 },
             };
-            self.applicability_impossible.insert(id, impossible);
+            self.applicability_facts.entry(id).or_default().impossible = Some(impossible);
         }
         Ok(())
     }
@@ -1717,8 +1748,16 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
     pub fn finish_work(&mut self) -> crate::contracts::Work {
         self.applicability.record_work(&mut self.work);
         self.work.requirement_input_entries = self.requirement_inputs.len();
-        self.work.plan_input_entries = self.plan_inputs.len();
-        self.work.plan_sequence_input_entries = self.plan_sequence_inputs.len();
+        self.work.plan_input_entries = self
+            .plan_facts
+            .values()
+            .filter(|facts| facts.inputs.is_some())
+            .count();
+        self.work.plan_sequence_input_entries = self
+            .plan_sequence_facts
+            .values()
+            .filter(|facts| facts.inputs.is_some())
+            .count();
 
         self.work.input_visits = self.graph.substitution_work.input_visits;
         self.work.argument_projections = self.graph.substitution_work.argument_projections;
@@ -2089,7 +2128,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
     }
 
     fn report_condition_support(&mut self, condition: ConditionId<'g>) -> ReportSupport<'g> {
-        if let Some(support) = self.report_condition_supports.get(&condition) {
+        if let Some(ConditionFacts {
+            support: Some(support),
+            ..
+        }) = self.report_condition_facts.get(&condition)
+        {
             return support.clone();
         }
         self.work.report_support_visits = self.work.report_support_visits.saturating_add(1);
@@ -2106,8 +2149,10 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             }
             ConditionNode::Unknown | ConditionNode::Returned(..) => ReportSupport::Unknown,
         };
-        self.report_condition_supports
-            .insert(condition, support.clone());
+        self.report_condition_facts
+            .entry(condition)
+            .or_default()
+            .support = Some(support.clone());
         self.work.report_support_entries = self.work.report_support_entries.saturating_add(1);
         support
     }
@@ -2367,7 +2412,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             Visit(ApplicabilityId<'g>),
             Build(ApplicabilityId<'g>),
         }
-        if let Some(support) = self.report_applicability_supports.get(&root) {
+        if let Some(ApplicabilityFacts {
+            support: Some(support),
+            ..
+        }) = self.applicability_facts.get(&root)
+        {
             return support.clone();
         }
         let mut pending = vec![Work::Visit(root)];
@@ -2375,7 +2424,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             self.work.report_support_visits = self.work.report_support_visits.saturating_add(1);
             match work {
                 Work::Visit(id) => {
-                    if self.report_applicability_supports.contains_key(&id) {
+                    if let Some(ApplicabilityFacts {
+                        support: Some(_),
+                        ..
+                    }) = self.applicability_facts.get(&id)
+                    {
                         continue;
                     }
                     pending.push(Work::Build(id));
@@ -2399,16 +2452,25 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                     let support = match self.applicability[id] {
                         Applicability::Context(_) => own,
                         Applicability::Prefix(_, child) => {
-                            let child = self.report_applicability_supports[&child].clone();
+                            let child = self.applicability_facts[&child]
+                                .support
+                                .clone()
+                                .expect("child applicability support is built");
                             self.report_support_union(own, child)
                         }
                         Applicability::Either(left, right) => {
-                            let left = self.report_applicability_supports[&left].clone();
-                            let right = self.report_applicability_supports[&right].clone();
+                            let left = self.applicability_facts[&left]
+                                .support
+                                .clone()
+                                .expect("left applicability support is built");
+                            let right = self.applicability_facts[&right]
+                                .support
+                                .clone()
+                                .expect("right applicability support is built");
                             self.report_support_union(left, right)
                         }
                     };
-                    self.report_applicability_supports.insert(id, support);
+                    self.applicability_facts.entry(id).or_default().support = Some(support);
                     self.work.report_support_retained =
                         self.work.report_support_retained.saturating_add(1);
                     self.work.report_support_entries =
@@ -2416,7 +2478,10 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                 }
             }
         }
-        self.report_applicability_supports[&root].clone()
+        self.applicability_facts[&root]
+            .support
+            .clone()
+            .expect("root applicability support is built")
     }
 
     fn report_project_prefix(
@@ -2792,17 +2857,27 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
     }
 
     fn report_condition_context_probe(&mut self, condition: ConditionId<'g>) -> Step<Option<()>> {
-        if let Some(context) = self.report_condition_contexts.get(&condition) {
+        if let Some(ConditionFacts {
+            context: Some(context),
+            ..
+        }) = self.report_condition_facts.get(&condition)
+        {
             return Ok(*context);
         }
         let probe = self.graph.push(Sequence::EMPTY, condition)?;
         if self.context(NodeId::Condition(condition), GuardContextId(probe))?
             != GuardContextId(Sequence::EMPTY)
         {
-            self.report_condition_contexts.insert(condition, None);
+            self.report_condition_facts
+                .entry(condition)
+                .or_default()
+                .context = Some(None);
             return Ok(None);
         }
-        self.report_condition_contexts.insert(condition, Some(()));
+        self.report_condition_facts
+            .entry(condition)
+            .or_default()
+            .context = Some(Some(()));
         Ok(Some(()))
     }
 
@@ -2852,7 +2927,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             ),
             EitherRight(ApplicabilityId<'g>, ApplicabilityId<'g>),
         }
-        if let Some(result) = self.applicability_no_proven_guard_paths.get(&root) {
+        if let Some(ApplicabilityFacts {
+            no_proven_guard_path: Some(result),
+            ..
+        }) = self.applicability_facts.get(&root)
+        {
             return Ok(*result);
         }
         let mut local = FxHashMap::default();
@@ -2869,7 +2948,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             };
             match work {
                 Work::Visit(_) => {
-                    if let Some(certificate) = self.applicability_no_proven_guard_paths.get(&id) {
+                    if let Some(ApplicabilityFacts {
+                        no_proven_guard_path: Some(certificate),
+                        ..
+                    }) = self.applicability_facts.get(&id)
+                    {
                         local.insert(id, *certificate);
                         continue;
                     }
@@ -2880,15 +2963,19 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                         Applicability::Context(guards) => {
                             let certificate =
                                 self.report_guard_sequence_blocks_proven_path(guards)?;
-                            self.applicability_no_proven_guard_paths
-                                .insert(id, certificate);
+                            self.applicability_facts
+                                .entry(id)
+                                .or_default()
+                                .no_proven_guard_path = Some(certificate);
                             local.insert(id, certificate);
                         }
                         Applicability::Prefix(guards, child) => {
                             match self.report_guard_sequence_blocks_proven_path(guards)? {
                                 Some(()) => {
-                                    self.applicability_no_proven_guard_paths
-                                        .insert(id, Some(()));
+                                    self.applicability_facts
+                                        .entry(id)
+                                        .or_default()
+                                        .no_proven_guard_path = Some(Some(()));
                                     local.insert(id, Some(()));
                                 }
                                 None => {
@@ -2905,8 +2992,10 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                 }
                 Work::Prefix(_, child) => {
                     let certificate = local[&child];
-                    self.applicability_no_proven_guard_paths
-                        .insert(id, certificate);
+                    self.applicability_facts
+                        .entry(id)
+                        .or_default()
+                        .no_proven_guard_path = Some(certificate);
                     local.insert(id, certificate);
                 }
                 Work::EitherLeft(_, left, right) => match local[&left] {
@@ -2915,14 +3004,19 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                         pending.push(Work::Visit(right));
                     }
                     None => {
-                        self.applicability_no_proven_guard_paths.insert(id, None);
+                        self.applicability_facts
+                            .entry(id)
+                            .or_default()
+                            .no_proven_guard_path = Some(None);
                         local.insert(id, None);
                     }
                 },
                 Work::EitherRight(_, right) => {
                     let certificate = local[&right];
-                    self.applicability_no_proven_guard_paths
-                        .insert(id, certificate);
+                    self.applicability_facts
+                        .entry(id)
+                        .or_default()
+                        .no_proven_guard_path = Some(certificate);
                     local.insert(id, certificate);
                 }
             }
@@ -3011,19 +3105,28 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
         if let ConditionNode::Unknown = self.graph[condition] {
             return Ok(Some(condition));
         }
-        if let Some(certificate) = self.report_condition_certificates.get(&condition) {
+        if let Some(ConditionFacts {
+            certificate: Some(certificate),
+            ..
+        }) = self.report_condition_facts.get(&condition)
+        {
             return Ok(*certificate);
         }
         let Some(()) = self.report_condition_context_probe(condition)? else {
-            self.report_condition_certificates.insert(condition, None);
+            self.report_condition_facts
+                .entry(condition)
+                .or_default()
+                .certificate = Some(None);
             return Ok(None);
         };
         let resolved = self.resolve_condition(condition, &Sequence::EMPTY)?;
         let certificate = self
             .report_condition_shape_certificate(resolved)
             .map(|_| resolved);
-        self.report_condition_certificates
-            .insert(condition, certificate);
+        self.report_condition_facts
+            .entry(condition)
+            .or_default()
+            .certificate = Some(certificate);
         Ok(certificate)
     }
 
@@ -3225,7 +3328,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             if let ReportPathStatus::Refuted = status {
                 continue;
             }
-            if let Some(Some(())) = self.applicability_impossible.get(&id) {
+            if let Some(ApplicabilityFacts {
+                impossible: Some(Some(())),
+                ..
+            }) = self.applicability_facts.get(&id)
+            {
                 continue;
             }
             match self.applicability[id] {
@@ -3368,7 +3475,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                 Inputs<'g>,
             ),
         }
-        if let Some(inputs) = self.plan_sequence_inputs.get(&root) {
+        if let Some(PlanSequenceFacts {
+            inputs: Some(inputs),
+            ..
+        }) = self.plan_sequence_facts.get(&root)
+        {
             return Ok(*inputs);
         }
         let mut pending = vec![Work::Sequence(root)];
@@ -3376,13 +3487,19 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             self.work.plan_input_visits = self.work.plan_input_visits.saturating_add(1);
             match work {
                 Work::Sequence(sequence) => {
-                    if self.plan_sequence_inputs.contains_key(&sequence) {
+                    if let Some(PlanSequenceFacts {
+                        inputs: Some(_),
+                        ..
+                    }) = self.plan_sequence_facts.get(&sequence)
+                    {
                         continue;
                     }
                     match self.requirement_sequences.parts(sequence)? {
                         crate::sequence::Parts::Empty => {
-                            self.plan_sequence_inputs
-                                .insert(sequence, Inputs::Known(SetId::EMPTY));
+                            self.plan_sequence_facts
+                                .entry(sequence)
+                                .or_default()
+                                .inputs = Some(Inputs::Known(SetId::EMPTY));
                         }
                         crate::sequence::Parts::Leaf(plan) => {
                             pending.push(Work::Leaf(sequence, plan));
@@ -3395,12 +3512,21 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                     }
                 }
                 Work::Leaf(sequence, plan) => {
-                    self.plan_sequence_inputs
-                        .insert(sequence, self.plan_inputs[&plan]);
+                    let inputs = self.plan_facts[&plan].inputs;
+                    self.plan_sequence_facts
+                        .entry(sequence)
+                        .or_default()
+                        .inputs = Some(inputs.expect("leaf plan inputs are built"));
                 }
-                Work::Left(sequence, left, right) => match self.plan_sequence_inputs[&left] {
+                Work::Left(sequence, left, right) => match self.plan_sequence_facts[&left]
+                    .inputs
+                    .expect("left plan sequence inputs are built")
+                {
                     Inputs::Unknown => {
-                        self.plan_sequence_inputs.insert(sequence, Inputs::Unknown);
+                        self.plan_sequence_facts
+                            .entry(sequence)
+                            .or_default()
+                            .inputs = Some(Inputs::Unknown);
                     }
                     inputs @ Inputs::Known(_) => {
                         pending.push(Work::Right(sequence, inputs, right));
@@ -3408,19 +3534,27 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                     }
                 },
                 Work::Right(sequence, left, right) => {
-                    let inputs = self
-                        .graph
-                        .combine_inputs(left, self.plan_sequence_inputs[&right])?;
-                    self.plan_sequence_inputs.insert(sequence, inputs);
+                    let right = self.plan_sequence_facts[&right]
+                        .inputs
+                        .expect("right plan sequence inputs are built");
+                    let inputs = self.graph.combine_inputs(left, right)?;
+                    self.plan_sequence_facts
+                        .entry(sequence)
+                        .or_default()
+                        .inputs = Some(inputs);
                 }
                 Work::Plan(plan) => {
-                    if self.plan_inputs.contains_key(&plan) {
+                    if let Some(PlanFacts {
+                        inputs: Some(_),
+                        ..
+                    }) = self.plan_facts.get(&plan)
+                    {
                         continue;
                     }
                     match self.requirement_plans[plan.0 as usize] {
                         RequirementPlan::Leaf(id) => {
                             let inputs = self.requirement_input_summary(id)?;
-                            self.plan_inputs.insert(plan, inputs);
+                            self.plan_facts.entry(plan).or_default().inputs = Some(inputs);
                         }
                         RequirementPlan::Transform(sequence, arguments, guards) => {
                             match self.graph.sequence_input_summary(
@@ -3428,7 +3562,8 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                                 InputUse::Substitution,
                             )? {
                                 Inputs::Unknown => {
-                                    self.plan_inputs.insert(plan, Inputs::Unknown);
+                                    self.plan_facts.entry(plan).or_default().inputs =
+                                        Some(Inputs::Unknown);
                                 }
                                 inputs @ Inputs::Known(_) => {
                                     pending
@@ -3440,7 +3575,10 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                     }
                 }
                 Work::Transform(plan, sequence, arguments, guards) => {
-                    let inputs = match self.plan_sequence_inputs[&sequence] {
+                    let inputs = match self.plan_sequence_facts[&sequence]
+                        .inputs
+                        .expect("transformed plan sequence inputs are built")
+                    {
                         Inputs::Unknown => Inputs::Unknown,
                         Inputs::Known(positions) => {
                             let positions = self.graph.members(positions).collect::<Vec<_>>();
@@ -3469,11 +3607,13 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
                             inputs
                         }
                     };
-                    self.plan_inputs.insert(plan, inputs);
+                    self.plan_facts.entry(plan).or_default().inputs = Some(inputs);
                 }
             }
         }
-        Ok(self.plan_sequence_inputs[&root])
+        Ok(self.plan_sequence_facts[&root]
+            .inputs
+            .expect("root plan sequence inputs are built"))
     }
 
     fn cache_slot(&mut self, query: &Query<'g>) -> Step<CacheSlot<'g>> {
@@ -3619,7 +3759,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
         &mut self,
         id: RequirementPlanId<'g>,
     ) -> Option<(Obligation<'g>, RequirementId<'g>)> {
-        if let Some(obligation) = self.requirement_plan_obligations.get(&id) {
+        if let Some(PlanFacts {
+            obligation: Some(obligation),
+            ..
+        }) = self.plan_facts.get(&id)
+        {
             return *obligation;
         }
         let obligation = match self.requirement_plans[id.0 as usize] {
@@ -3640,7 +3784,7 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
             }
             RequirementPlan::Transform(..) => None,
         };
-        self.requirement_plan_obligations.insert(id, obligation);
+        self.plan_facts.entry(id).or_default().obligation = Some(obligation);
         obligation
     }
 
@@ -3733,7 +3877,11 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
         &mut self,
         group: RequirementGroup<'g>,
     ) -> Step<RequirementGroup<'g>> {
-        if let Some(result) = self.requirement_factors.get(&group.ordered) {
+        if let Some(PlanSequenceFacts {
+            factors: Some(result),
+            ..
+        }) = self.plan_sequence_facts.get(&group.ordered)
+        {
             return Ok(*result);
         }
         let plans = self
@@ -3779,7 +3927,10 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
         for (_, plan, _) in shared {
             self.insert_requirement_id(&mut result, plan)?;
         }
-        self.requirement_factors.insert(group.ordered, result);
+        self.plan_sequence_facts
+            .entry(group.ordered)
+            .or_default()
+            .factors = Some(result);
         Ok(result)
     }
 
@@ -4040,12 +4191,14 @@ impl<'a, 'tcx, 'g> Evaluation<'_, 'a, 'tcx, 'g> {
         origin: Option<&OriginId<'g>>,
         guards: GuardContextId<'g>,
     ) -> Step<ExprId<'g>> {
-        let origin = match self
-            .session
-            .with(|engine| engine.active.contains_key(&engine.graph[callable].def))
-        {
-            true => None,
-            false => origin.cloned(),
+        let origin = match self.session.with(|engine| {
+            engine
+                .definition_activity
+                .get(&engine.graph[callable].def)
+                .and_then(|activity| activity.active)
+        }) {
+            Some(_) => None,
+            None => origin.cloned(),
         };
         let Answer::Expression(value) = self
             .session
@@ -6086,7 +6239,10 @@ impl<'a, 'tcx, 'g> Engine for Evaluator<'a, 'tcx, 'g> {
         };
         if let Some((callable, arguments)) = recursive {
             let def = self.graph[callable].def;
-            if let Some(&id) = self.active.get(&def)
+            if let Some(id) = self
+                .definition_activity
+                .get(&def)
+                .and_then(|activity| activity.active)
                 && let None = self.finite_arguments(callable, &arguments.0)
             {
                 self.dependencies.observe(Dependency::Blocked(id));
@@ -6120,9 +6276,11 @@ impl<'a, 'tcx, 'g> Engine for Evaluator<'a, 'tcx, 'g> {
                 let def = instance.def;
                 let arguments = instance.args.clone();
                 *self
-                    .generics
+                    .definition_activity
                     .entry(def)
                     .or_default()
+                    .generics
+                    .get_or_insert_default()
                     .entry(arguments)
                     .or_default() += 1;
             }
@@ -6137,12 +6295,13 @@ impl<'a, 'tcx, 'g> Engine for Evaluator<'a, 'tcx, 'g> {
         let first_return = match &query {
             Query::Returned(callable, ..) | Query::ReturnGuards(callable, ..) => {
                 let def = self.graph[*callable].def;
-                match self.active.entry(def) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(id);
+                let activity = self.definition_activity.entry(def).or_default();
+                match activity.active {
+                    None => {
+                        activity.active = Some(id);
                         Some(def)
                     }
-                    std::collections::hash_map::Entry::Occupied(_) => None,
+                    Some(_) => None,
                 }
             }
             _ => None,
@@ -6173,9 +6332,13 @@ impl<'a, 'tcx, 'g> Engine for Evaluator<'a, 'tcx, 'g> {
                 let instance = self.graph[*callable];
                 let def = instance.def;
                 let arguments = instance.args.clone();
-                let contexts = self
-                    .generics
+                let activity = self
+                    .definition_activity
                     .get_mut(&def)
+                    .expect("scheduled callable has a generic context");
+                let contexts = activity
+                    .generics
+                    .as_mut()
                     .expect("scheduled callable has a generic context");
                 let count = contexts
                     .get_mut(&arguments)
@@ -6185,13 +6348,15 @@ impl<'a, 'tcx, 'g> Engine for Evaluator<'a, 'tcx, 'g> {
                     contexts.swap_remove(&arguments);
                 }
                 if contexts.is_empty() {
-                    self.generics.remove(&def);
+                    activity.generics = None;
                 }
             }
             _ => {}
         }
-        if let Some(def) = frame.first_return {
-            self.active.remove(&def);
+        if let Some(def) = frame.first_return
+            && let Some(activity) = self.definition_activity.get_mut(&def)
+        {
+            activity.active = None;
         }
         self.queries
             .pop()
