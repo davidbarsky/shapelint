@@ -95,6 +95,14 @@ impl Report {
         }
     }
 
+    pub(crate) fn label(mut self, at: impl Into<Span>, message: impl Into<String>) -> Report {
+        self.labels.push(Label {
+            span: at.into(),
+            message: message.into(),
+        });
+        self
+    }
+
     pub(crate) fn help(mut self, message: impl Into<String>) -> Report {
         self.footers.push(Footer::Help {
             message: message.into(),

@@ -56,6 +56,11 @@ impl Rule {
 
 pub const RULES: &[Rule] = &[
     Rule {
+        id: "test-only-production-path",
+        set: RuleSet::Mechanical,
+        summary: "test cfg or tests under src create a separate production path",
+    },
+    Rule {
         id: "duration-comment",
         set: RuleSet::Mechanical,
         summary: "large duration literal in config without a human-unit comment (C06)",
@@ -64,6 +69,41 @@ pub const RULES: &[Rule] = &[
         id: "mapped-srcs",
         set: RuleSet::Mechanical,
         summary: "mapped_srcs in a Buck/Bazel file (C07)",
+    },
+    Rule {
+        id: "for-chain",
+        set: RuleSet::Mechanical,
+        summary: "iterator chain in a for-loop header, or for_each (Google)",
+    },
+    Rule {
+        id: "tuple-return",
+        set: RuleSet::Lints,
+        summary: "tuple return type or wide tuple destructuring: prefer named fields (Google)",
+    },
+    Rule {
+        id: "std-trait-fn",
+        set: RuleSet::Mechanical,
+        summary: "a free parse_* function accepts text and returns Result or Option (Google)",
+    },
+    Rule {
+        id: "glob-import",
+        set: RuleSet::Mechanical,
+        summary: "glob import outside the allowed cases (Google)",
+    },
+    Rule {
+        id: "import-alias",
+        set: RuleSet::Mechanical,
+        summary: "named use-import alias: use qualified paths instead",
+    },
+    Rule {
+        id: "super-path",
+        set: RuleSet::Mechanical,
+        summary: "super outside use super::* in tests: use crate-qualified paths",
+    },
+    Rule {
+        id: "redundant-comment",
+        set: RuleSet::Lints,
+        summary: "comment restates adjacent code or carries TODO/section scaffolding",
     },
     Rule {
         id: "unknown-allow",

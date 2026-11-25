@@ -16,6 +16,52 @@ fn unreadable_source_is_an_error_even_with_exit_zero() {
 }
 
 #[test]
+fn overlapping_inputs_produce_one_finding() {
+    let directory = tempfile::tempdir().expect("create project");
+    std::fs::create_dir(directory.path().join("src")).expect("create source directory");
+    std::fs::write(
+        directory.path().join("src/lib.rs"),
+        "use example::Thing as Alias;",
+    )
+    .expect("write source");
+    let output = Command::new(env!("CARGO_BIN_EXE_shapelint"))
+        .current_dir(directory.path())
+        .args([
+            "--format",
+            "json",
+            "src",
+            "./src/lib.rs",
+            "src/../src/lib.rs",
+        ])
+        .output()
+        .expect("run shapelint");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    assert_eq!(output.stderr, b"");
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_symlinks_are_not_traversed() {
+    let directory = tempfile::tempdir().expect("create project");
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "use example::Thing as Alias;",
+    )
+    .expect("write source");
+    std::os::unix::fs::symlink(".", directory.path().join("loop")).expect("create loop");
+    let output = Command::new(env!("CARGO_BIN_EXE_shapelint"))
+        .current_dir(directory.path())
+        .args(["--format", "json"])
+        .output()
+        .expect("run shapelint");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    assert_eq!(output.stderr, b"");
+}
+
+#[cfg(unix)]
+#[test]
 fn broken_links_found_during_traversal_are_errors() {
     let directory = tempfile::tempdir().expect("create project");
     std::os::unix::fs::symlink("missing", directory.path().join("broken.rs"))

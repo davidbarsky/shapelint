@@ -5,6 +5,8 @@
 //! which [`render`] turns into text. The `shapelint` binary owns all I/O.
 
 #![feature(rustc_private)]
+extern crate rustc_ast;
+extern crate rustc_ast_pretty;
 extern crate rustc_driver;
 extern crate rustc_lexer;
 extern crate rustc_parse;
@@ -15,10 +17,12 @@ mod config;
 mod control_flow;
 mod diagnostic;
 mod rules;
+mod rust_rules;
 mod rust_syntax;
 mod source;
 mod suggest;
 mod suppress;
+mod test_review_rules;
 mod text_rules;
 mod text_syntax;
 
@@ -134,9 +138,11 @@ fn lint_here(
     language: Language,
 ) -> Result<Vec<Finding>, LintError> {
     match language {
-        Language::Rust => rust_syntax::parse(input, || {
+        Language::Rust => rust_syntax::parse(input, |file| {
             let suppressions = rust_suppressions(input)?;
             let mut sink = diagnostic::Sink::new(input, config, &suppressions);
+            rust_rules::lint(&mut sink, file, input, config);
+            test_review_rules::lint(&mut sink, file);
             sink.report_unknown();
             sink.finish()
         })?,
