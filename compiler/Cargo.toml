@@ -9,15 +9,21 @@ publish = false
 test = false
 bench = false
 
+[[bin]]
+name = "shapelint-driver"
+path = "src/main.rs"
+test = false
+bench = false
+
 [dependencies]
-serde_json = "1.0.154"
-tempfile = "3.27.0"
-shapelint = { path = ".." }
-serde = { version = "1.0.229", features = ["derive"] }
 boxcar = "0.2.14"
 parking_lot = "0.13.0"
 hashbrown = { version = "0.17.2", default-features = false, features = ["inline-more"] }
+shapelint = { path = ".." }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 thiserror = "2.0.21"
+tempfile = "3.27.0"
 
 [dev-dependencies]
 hegeltest = "0.54.2"
