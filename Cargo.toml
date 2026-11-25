@@ -1,0 +1,27 @@
+[workspace]
+default-members = ["."]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+rust-version = "1.100"
+
+[package]
+name = "shapelint"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[dependencies]
+annotate-snippets = "0.12.17"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+hegeltest = "0.54.2"
+

@@ -1,0 +1,8 @@
+/target
+/compiler/target
+/compiler/artifacts
+
+/compiler/.hegel/
+*.pending-snap
+
+.DS_Store
