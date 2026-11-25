@@ -18,6 +18,8 @@ mod config;
 mod control_flow;
 mod diagnostic;
 mod expression_rules;
+mod hegel_inputs;
+mod hegel_policy;
 mod rules;
 mod rust_rules;
 mod rust_syntax;
@@ -177,6 +179,8 @@ fn lint_here(
             api_rules::lint(&mut sink, file);
             expression_rules::lint(&mut sink, file, boundary);
             test_review_rules::lint(&mut sink, file, &input.name);
+            hegel_inputs::lint(&mut sink, file);
+            hegel_policy::lint(&mut sink, file);
             sink.report_unknown();
             let mut facts = workspace::collect(file);
             facts.path = input.name.to_string();

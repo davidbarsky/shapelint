@@ -15,6 +15,7 @@ pub(crate) struct Function<'a> {
     pub attrs: &'a [ast::Attribute],
     pub span: rustc_span::Span,
     pub name: String,
+    pub implementation: Option<&'a ast::Item>,
     pub test: Option<()>,
 }
 
@@ -48,6 +49,7 @@ pub(crate) fn functions<'a>(file: &RustFile<'a>) -> Vec<Function<'a>> {
                                 .collect::<Vec<_>>()
                                 .join("::")
                         ),
+                        implementation: self.implementation,
                         test: self.test,
                     });
                     self.scope.push(function.ident.name.to_string());
@@ -77,6 +79,7 @@ pub(crate) fn functions<'a>(file: &RustFile<'a>) -> Vec<Function<'a>> {
                         if owner.is_empty() { "" } else { "::" },
                         function.ident.name
                     ),
+                    implementation: self.implementation,
                     test: self.test.or_else(|| test_attributes(&item.attrs)),
                 });
             }
@@ -93,6 +96,13 @@ pub(crate) fn functions<'a>(file: &RustFile<'a>) -> Vec<Function<'a>> {
     visitor.functions
 }
 
+pub(crate) fn attribute_path(attribute: &ast::Attribute) -> Option<String> {
+    let ast::AttrKind::Normal(attribute) = &attribute.kind else {
+        return None;
+    };
+    Some(path_name(&attribute.item.path))
+}
+
 pub(crate) fn path_name(path: &ast::Path) -> String {
     let mut name = String::new();
     for segment in &path.segments {
@@ -104,10 +114,64 @@ pub(crate) fn path_name(path: &ast::Path) -> String {
     name
 }
 
+pub(crate) fn hegel_test_attribute(attrs: &[ast::Attribute]) -> Option<&ast::Attribute> {
+    attrs
+        .iter()
+        .find(|attr| match attribute_path(attr).as_deref() {
+            Some("hegel::test" | "hegeltest::test") => true,
+            _ => false,
+        })
+}
+
+pub(crate) fn setting(
+    attr: &ast::Attribute,
+    name: &str,
+) -> Option<(rustc_span::Span, Vec<rustc_ast::tokenstream::TokenTree>)> {
+    let ast::AttrKind::Normal(attribute) = &attr.kind else {
+        return None;
+    };
+    let tokens = attribute.item.args.inner_tokens();
+    let mut tokens = tokens.iter();
+    while let Some(tree) = tokens.next() {
+        let rustc_ast::tokenstream::TokenTree::Token(token, _) = tree else {
+            continue;
+        };
+        let rustc_ast::token::Ident(ident, _) = token.kind else {
+            continue;
+        };
+        if ident.as_str() != name {
+            continue;
+        }
+        let Some(rustc_ast::tokenstream::TokenTree::Token(equal, _)) = tokens.next() else {
+            continue;
+        };
+        if equal.kind != rustc_ast::token::Eq {
+            continue;
+        }
+        let value = tokens
+            .by_ref()
+            .take_while(|tree| match tree {
+                rustc_ast::tokenstream::TokenTree::Token(token, _) => {
+                    token.kind != rustc_ast::token::Comma
+                }
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        return Some((token.span, value));
+    }
+    None
+}
+
 pub(crate) struct Binding<'a> {
     pub statement: rustc_span::Span,
     pub scope: rustc_span::Span,
     pub initializer: Option<&'a ast::Expr>,
+}
+
+pub(crate) enum Traversal {
+    Execution,
+    Closures,
 }
 
 #[derive(Default)]
@@ -119,12 +183,14 @@ pub(crate) struct Body<'a> {
 struct BodyVisitor<'a> {
     body: Body<'a>,
     scopes: Vec<rustc_span::Span>,
+    traversal: Traversal,
 }
 
-pub(crate) fn collect_body<'a>(block: &'a ast::Block) -> Body<'a> {
+pub(crate) fn collect_body<'a>(block: &'a ast::Block, traversal: Traversal) -> Body<'a> {
     let mut visitor = BodyVisitor {
         body: Body::default(),
         scopes: Vec::new(),
+        traversal,
     };
     visitor.visit_block(block);
     let mut body = visitor.body;
@@ -199,6 +265,10 @@ impl<'a> Visitor<'a> for BodyVisitor<'a> {
     fn visit_expr(&mut self, expr: &'a ast::Expr) {
         self.body.expressions.push(expr);
         match &expr.kind {
+            ast::ExprKind::Closure(_) => match self.traversal {
+                Traversal::Execution => return,
+                Traversal::Closures => {}
+            },
             ast::ExprKind::ForLoop(loop_) => {
                 self.bind(&loop_.pat, loop_.pat.span, loop_.body.span, None)
             }
@@ -219,10 +289,22 @@ impl<'a> Visitor<'a> for BodyVisitor<'a> {
 pub(crate) fn lint(sink: &mut Sink<'_>, file: &RustFile<'_>, path: &str) {
     let functions = functions(file);
     for function in &functions {
+        if let Some(attr) = hegel_test_attribute(function.attrs)
+            && let Some((span, _)) = setting(attr, "test_cases")
+        {
+            let report = Report::new("Hegel test overrides the local case budget", file.span(span), "local `test_cases` override")
+                .help("keep the case budget in the test profile so all Hegel tests use the same run policy");
+            sink.emit(
+                "hegel-local-case-budget",
+                file.item_span(function.span, function.attrs),
+                &function.name,
+                report,
+            );
+        }
         let Some(block) = &function.function.body else {
             continue;
         };
-        let body = collect_body(block);
+        let body = collect_body(block, Traversal::Closures);
         let test = function.test.or_else(|| is_test_path(path));
         for expr in &body.expressions {
             if let Some(()) = test {

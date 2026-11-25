@@ -206,9 +206,64 @@ pub const RULES: &[Rule] = &[
         summary: "primitive random draws are decoded into domain actions",
     },
     Rule {
+        id: "hegel-local-case-budget",
+        set: RuleSet::Mechanical,
+        summary: "Hegel test attribute overrides the local case budget",
+    },
+    Rule {
         id: "arbitrary-bound",
         set: RuleSet::Lints,
         summary: "literal bound lacks a named domain or resource constraint",
+    },
+    Rule {
+        id: "hegel-scattered-draws",
+        set: RuleSet::Lints,
+        summary: "Hegel test draws separate inputs instead of one typed case",
+    },
+    Rule {
+        id: "hegel-input-branch",
+        set: RuleSet::Lints,
+        summary: "test branches with if on a generated input",
+    },
+    Rule {
+        id: "hegel-assume",
+        set: RuleSet::Lints,
+        summary: "Hegel assumption discards inputs instead of constructing the domain",
+    },
+    Rule {
+        id: "hegel-generator-filter",
+        set: RuleSet::Lints,
+        summary: "generator filtering may work against shrinking and discard useful inputs",
+    },
+    Rule {
+        id: "hegel-random-operation",
+        set: RuleSet::Lints,
+        summary: "applying a generated operation makes additional random choices",
+    },
+    Rule {
+        id: "hegel-fixed-seed",
+        set: RuleSet::Mechanical,
+        summary: "Hegel test configures a local seed or derandomization policy",
+    },
+    Rule {
+        id: "hegel-health-check",
+        set: RuleSet::Lints,
+        summary: "health-check suppression needs measurement or generator redesign",
+    },
+    Rule {
+        id: "hegel-sampled-invariant",
+        set: RuleSet::Lints,
+        summary: "sampled invariant may miss a safety violation between steps",
+    },
+    Rule {
+        id: "hegel-rule-weight",
+        set: RuleSet::Lints,
+        summary: "manual rule weighting changes the histories explored",
+    },
+    Rule {
+        id: "hegel-early-exit",
+        set: RuleSet::Lints,
+        summary: "history stops observing the system after a rejected operation",
     },
     Rule {
         id: "redundant-comment",

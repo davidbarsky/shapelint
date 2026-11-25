@@ -219,6 +219,52 @@ fn primitive_draw_rule_reports_uncapped_integer_match() {
 }
 
 #[test]
+fn hegel_budget_rule_requires_exact_qualified_attribute() {
+    let text = include_str!("../fixtures/feedback/tests/literal_cases.rs");
+    let findings = findings_for("fixtures/feedback/tests/literal_cases.rs", text);
+    let budgets: Vec<_> = findings
+        .iter()
+        .filter(|finding| finding.rule == "hegel-local-case-budget")
+        .collect();
+    assert_eq!(budgets.len(), 2);
+    let start = text
+        .find("test_cases = 12")
+        .expect("Hegel budget attribute");
+    assert!(
+        budgets
+            .iter()
+            .any(|finding| finding.primary.span.start as usize == start)
+    );
+    let start = text.find("test_cases = 8").expect("Hegel budget attribute");
+    assert!(
+        budgets
+            .iter()
+            .any(|finding| finding.primary.span.start as usize == start)
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !finding.item.contains("other_budget_is_not_reported"))
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !finding.item.contains("budget_text_is_not_reported"))
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !finding.item.contains("nested_budget_is_not_reported"))
+    );
+    assert!(
+        findings
+            .iter()
+            .filter(|finding| finding.rule == "primitive-test-actions")
+            .all(|finding| !finding.item.contains("generated_typed_case"))
+    );
+}
+
+#[test]
 fn redundant_comments_report_lexical_scaffolding_only() {
     let text = include_str!("../fixtures/feedback/comments/redundant.rs");
     let findings = findings_for("fixtures/feedback/comments/redundant.rs", text);
