@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "shapelint"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "annotate-snippets",
  "clap",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "shapelint-driver"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "boxcar",
  "hashbrown",
