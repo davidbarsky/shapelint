@@ -48,8 +48,17 @@ pub enum CompilerEvidence {
         decision: Related,
         other_calls: Vec<Related>,
     },
+    OptionBoundary {
+        parameter: String,
+        chain: Vec<Related>,
+    },
     SerializationDetour {
         origin: Related,
+    },
+    UnusedCapability {
+        parameter: String,
+        supplied: String,
+        callers: Vec<Related>,
     },
     BorrowedClone {
         uses: Vec<Related>,
@@ -57,6 +66,10 @@ pub enum CompilerEvidence {
     DiscardedValidation {
         condition: String,
         origin: Related,
+    },
+    UnnecessaryOptionality {
+        parameter: String,
+        callers: Vec<Related>,
     },
     InvalidatedValidation {
         condition: String,
@@ -186,10 +199,23 @@ pub fn lint_compiler(
                 let report = label_sites(report, std::slice::from_ref(decision));
                 ("forwarded-field", label_sites(report, other_calls))
             }
+            CompilerEvidence::OptionBoundary { parameter, chain } => {
+                let mut report = Report::new("optionality passes through this call chain", *span, format!("`{parameter}` reaches the absence decision unchanged"))
+                    .help("Handle absence at the outer boundary and pass the payload through these operations.");
+                for origin in chain { report = report.related(origin.clone()); }
+                ("option-plumbing", report)
+            }
             CompilerEvidence::SerializationDetour { origin } => ("serialization-detour", Report::new("a typed value is serialized and immediately reconstructed", *span, "deserializes back into the original type")
                 .related(origin.clone())
                 .note("The serialized value reaches this decoder without an intervening mutation or external operation.")
                 .help("Pass the typed value directly unless this conversion deliberately normalizes data or tests a codec contract.")),
+            CompilerEvidence::UnusedCapability { parameter, supplied, callers } => {
+                let mut report = Report::new("no analyzed caller exercises this parameter's alternatives", *span, format!("`{parameter}` is always {supplied}"))
+                    .note("The declared analysis boundary covers the callers, the function does not escape it, and all resolved callers agree.")
+                    .help("Remove unused plumbing or make the missing production producer explicit.");
+                for caller in callers { report = report.related(caller.clone()); }
+                ("unused-capability", report)
+            }
             CompilerEvidence::BorrowedClone { uses } => {
                 let mut report = Report::new("this clone is used only through shared borrows", *span, "the original value can supply these reads")
                     .note("Recognized buffer or handle cloning feeds only modeled read operations; no automatic rewrite is applied.")
@@ -200,6 +226,12 @@ pub fn lint_compiler(
             CompilerEvidence::DiscardedValidation { condition, origin } => ("discarded-validation", Report::new("an earlier validator already establishes this recovery condition", *span, condition)
                 .related(origin.clone())
                 .help("Return a value that carries the validated invariant and consume it without revalidation.")),
+            CompilerEvidence::UnnecessaryOptionality { parameter, callers } => {
+                let mut report = Report::new("every caller supplies the optional payload", *span, format!("`{parameter}` is always Some"))
+                    .help("Accept the payload directly and remove the Some wrappers at the callers.");
+                for caller in callers { report = report.related(caller.clone()); }
+                ("unnecessary-optionality", report)
+            }
             CompilerEvidence::InvalidatedValidation { condition, mutation } => ("invalidated-validation", Report::new("a mutation invalidated the earlier validation", *span, format!("requires {condition} after the mutation"))
                 .related(mutation.clone())
                 .note("This identifies a lost guarantee, not proof that the operation fails.")

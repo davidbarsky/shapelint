@@ -1,3 +1,4 @@
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
@@ -346,4 +347,66 @@ pub(crate) fn function_uses<'tcx>(
         }
         .visit_body(tcx.hir_body_owned_by(owner));
     }
+}
+
+type SomeArguments = FxHashMap<DefId, FxHashMap<usize, Vec<HirId>>>;
+
+pub(crate) fn editable_option_parameters(
+    tcx: TyCtxt<'_>,
+    candidates: &FxHashMap<DefId, FxHashSet<usize>>,
+) -> SomeArguments {
+    let mut editable = SomeArguments::default();
+    for (&def, indices) in candidates {
+        let Some(local) = def.as_local() else {
+            continue;
+        };
+        if tcx.effective_visibilities(()).is_exported(local) {
+            continue;
+        }
+        let sig = tcx.fn_sig(def).instantiate_identity().skip_binder();
+        let inputs = sig.inputs().iter().enumerate();
+        for (index, input) in inputs {
+            if indices.contains(&index)
+                && let ty::Adt(adt, _) = input.kind()
+                && tcx.is_diagnostic_item(rustc_span::sym::Option, adt.did())
+            {
+                editable.entry(def).or_default().insert(index, Vec::new());
+            }
+        }
+    }
+    if editable.is_empty() {
+        return editable;
+    }
+    function_uses(tcx, |def, usage| {
+        let Some(parameters) = editable.get_mut(&def) else {
+            return;
+        };
+        let Some(call) = usage else {
+            editable.remove(&def);
+            return;
+        };
+        parameters.retain(|index, wrappers| {
+            let Some(argument) = call.argument(*index) else {
+                return false;
+            };
+            let ExprKind::Call(callee, [_]) = argument.kind else {
+                return false;
+            };
+            if !call.expr.span.from_expansion()
+                && !argument.span.from_expansion()
+                && !callee.span.from_expansion()
+                && let Some(variant) = variant_constructor(tcx, call.typeck, callee)
+                && Some(variant) == tcx.lang_items().option_some_variant()
+            {
+                wrappers.push(argument.hir_id);
+                true
+            } else {
+                false
+            }
+        });
+        if parameters.is_empty() {
+            editable.remove(&def);
+        }
+    });
+    editable
 }

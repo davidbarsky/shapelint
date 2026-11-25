@@ -14,7 +14,7 @@ use crate::contracts::graph::{
     CapacityError, ConditionId, ConditionNode, ExprId, ExprNode, Graph, NodeId, TargetNode,
 };
 use crate::contracts::{
-    CheckBasis, Consumer, Invocation, Operation, Order, Relocation, Truth, Work, summaries,
+    Call, CheckBasis, Consumer, Invocation, Operation, Order, Relocation, Truth, Work, summaries,
 };
 use crate::pipeline::AnalysisGaps;
 use crate::pipeline::report::evaluator::Evaluator;
@@ -321,10 +321,63 @@ struct ReportContext<'a, 'tcx, 'g> {
     call_index: &'a crate::callers::CallIndex<'a, 'g>,
     summaries: &'a FxHashMap<DefId, summaries::SummaryId<'g>>,
     constructors: &'a FxHashMap<DefId, Vec<(DefId, summaries::SummaryId<'g>)>>,
+    coverage: &'a FxHashSet<rustc_hir::def_id::CrateNum>,
     productions: &'a FxHashMap<DefId, Vec<Production<'g>>>,
     resolved_productions: FxHashMap<DefId, Vec<(DefId, Sequence<'g, ConditionId<'g>>, ExprId<'g>)>>,
     mutations: &'a FxHashSet<DefId>,
     guarantees: FxHashMap<(DefId, ConditionId<'g>), Option<()>>,
+}
+
+impl<'g> Evaluator<'_, '_, 'g> {
+    pub fn escaped_functions(
+        &mut self,
+        context: &ReportContext<'_, '_, 'g>,
+        scope: crate::callers::Scope,
+        definitions: impl Iterator<Item = (DefId, summaries::SummaryId<'g>)>,
+        calls: &[(DefId, Call<'g, ExprId<'g>, ConditionId<'g>, TargetNode<'g>>)],
+    ) -> Result<FxHashSet<DefId>, CapacityError> {
+        let mut escaped = FxHashSet::default();
+        for (owner, id) in definitions {
+            let summary = self.graph[id];
+            escaped.extend(self.graph.members(summary.escapes));
+            if let crate::callers::Exposure::External =
+                crate::callers::exposure(context.tcx, owner, scope)
+            {
+                let mut returns = self.graph.scan(summary.returns);
+                while let Some(returned) = returns.next() {
+                    let value = self.resolve_expression(returned.value, &returned.guards)?;
+                    self.graph.functions(value, &mut escaped)?;
+                }
+            }
+        }
+        for (_, call) in calls {
+            let Some(def) = call.target.definition(self.graph) else {
+                if let TargetNode::Indirect(value) = &call.target {
+                    let value = self.resolve_expression(*value, &call.guards)?;
+                    self.graph.functions(value, &mut escaped)?;
+                }
+                let mut arguments = self.graph.scan(call.arguments);
+                while let Some(argument) = arguments.next() {
+                    self.graph.functions(argument, &mut escaped)?;
+                }
+                continue;
+            };
+            let Some(summary) = context.summaries.get(&def) else {
+                let mut arguments = self.graph.scan(call.arguments);
+                while let Some(argument) = arguments.next() {
+                    self.graph.functions(argument, &mut escaped)?;
+                }
+                continue;
+            };
+            let summary = self.graph[*summary];
+            self.graph.escaped_argument_functions(
+                call.arguments,
+                summary.escaped_arguments,
+                &mut escaped,
+            )?;
+        }
+        Ok(escaped)
+    }
 }
 
 struct ParameterField {
@@ -747,6 +800,7 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
             call_index: &self.calls,
             summaries,
             constructors: &self.constructors,
+            coverage: &self.summaries.coverage,
             productions: &self.productions,
             resolved_productions: FxHashMap::default(),
             mutations: &self.mutations,

@@ -92,6 +92,51 @@ fn analyze_all(
     callback.result.expect("analysis callback ran")
 }
 
+#[test]
+fn callback_expansions_are_independent_of_closed_sibling_branches() {
+    let root = "fn render(value: bool) -> u32 { if value { 1 } else { 0 } }
+        fn invoke(f: fn(bool) -> u32) -> u32 { f(false) }
+        pub fn root(route: usize) -> u32 { sibling(render, route); invoke(render) }
+        fn leaf(_: fn(bool) -> u32, _: usize) {}
+        ";
+    let analyze_tree = |source: &str| {
+        let (work, findings) = analyze_all(source, pipeline::AnalysisGaps::Hide);
+        let witnesses: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.rule == "unused-capability" && finding.item == "render")
+            .collect();
+        let [witness] = witnesses.as_slice() else {
+            panic!("expected the callback's constant argument finding: {witnesses:?}");
+        };
+        assert_eq!(witness.primary.message, "`value` is always false");
+        assert!(work.caller_expansions > 0);
+        let callers: Vec<_> = witness
+            .related
+            .iter()
+            .map(|related| related.label.clone())
+            .collect();
+        assert!(!callers.is_empty());
+        (work.caller_expansions, witness.primary.clone(), callers)
+    };
+    let [baseline, two_branches, five_branches] = [0, 2, 5].map(|branches| {
+        let mut source = root.to_owned();
+        for branch in 0..branches {
+            writeln!(
+                source,
+                "fn branch_{branch}(f: fn(bool) -> u32, n: usize) {{ leaf(f, n) }}"
+            )
+            .unwrap();
+        }
+        source.push_str("fn sibling(f: fn(bool) -> u32, n: usize) { match n {\n");
+        for branch in 0..branches {
+            writeln!(source, "{branch} => branch_{branch}(f, n),").unwrap();
+        }
+        source.push_str("_ => leaf(f, n), } }\n");
+        analyze_tree(&source)
+    });
+    assert_eq!([&two_branches, &five_branches], [&baseline; 2]);
+}
+
 fn unknown_guard_diamond(depth: usize) -> String {
     let choices = std::iter::repeat_n("Choice", depth)
         .collect::<Vec<_>>()

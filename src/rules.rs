@@ -81,6 +81,11 @@ pub const RULES: &[Rule] = &[
         summary: "typed data is serialized and reconstructed without crossing a boundary",
     },
     Rule {
+        id: "unused-capability",
+        set: RuleSet::Lints,
+        summary: "all known callers supply the same parameter alternative",
+    },
+    Rule {
         id: "clone-only-to-borrow",
         set: RuleSet::Lints,
         summary: "a recognized clone only feeds shared read operations",
@@ -94,6 +99,11 @@ pub const RULES: &[Rule] = &[
         id: "test-only-production-path",
         set: RuleSet::Mechanical,
         summary: "test cfg or tests under src create a separate production path",
+    },
+    Rule {
+        id: "unnecessary-optionality",
+        set: RuleSet::Lints,
+        summary: "all callers of a private parameter supply the optional payload (compiler driver only)",
     },
     Rule {
         id: "invalidated-validation",
@@ -145,6 +155,7 @@ pub const RULES: &[Rule] = &[
         set: RuleSet::Lints,
         summary: "returned fields contradict an inferred consumer invariant (compiler driver only)",
     },
+    // Derived from the review packet (C01–C27).
     Rule {
         id: "shallow-helper",
         set: RuleSet::Lints,
@@ -154,6 +165,11 @@ pub const RULES: &[Rule] = &[
         id: "check-passthrough",
         set: RuleSet::Lints,
         summary: "fallible check that returns Ok(()) or its own inputs: parse, don't validate (C05, C16, C17, C25, C26)",
+    },
+    Rule {
+        id: "option-plumbing",
+        set: RuleSet::Lints,
+        summary: "Option and its type arguments recur in a signature or absence flows through a call chain (C17, C18, C19)",
     },
     Rule {
         id: "json-in-domain",
@@ -200,6 +216,7 @@ pub const RULES: &[Rule] = &[
         set: RuleSet::Mechanical,
         summary: "mapped_srcs in a Buck/Bazel file (C07)",
     },
+    // Google Rust style guide, mechanical subset.
     Rule {
         id: "for-chain",
         set: RuleSet::Mechanical,

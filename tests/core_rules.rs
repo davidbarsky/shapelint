@@ -170,6 +170,59 @@ async fn verify(x: u8) -> Result<(), E> { if x == 0 { return Err(E); } Ok(()) }
 }
 
 #[test]
+fn option_plumbing_reports_every_group() {
+    assert_snapshot!(check("src/lib.rs", "fn f(a: Option<u8>, x: Option<String>, b: Option<u8>, y: Option<String>) {}\n", &Config::default()), @"
+    lint[option-plumbing]: `f` declares 2 separate `Option<u8>` parameters (`a`, `b`)
+      ╭▸ src/lib.rs:1:6
+      │
+    1 │ fn f(a: Option<u8>, x: Option<String>, b: Option<u8>, y: Option<String>) {}
+      │      ┯━━━━━━━━━━━━                     ───────────── same written parameter type
+      │      │
+      │      same written parameter type
+      │
+      ╰ help: Resolve the type and check which combinations of Some and None callers need. If the signature permits invalid combinations, use an enum whose variants carry the permitted values.
+
+    lint[option-plumbing]: `f` declares 2 separate `Option<String>` parameters (`x`, `y`)
+      ╭▸ src/lib.rs:1:21
+      │
+    1 │ fn f(a: Option<u8>, x: Option<String>, b: Option<u8>, y: Option<String>) {}
+      │                     ┯━━━━━━━━━━━━━━━━                 ───────────────── same written parameter type
+      │                     │
+      │                     same written parameter type
+      │
+      ╰ help: Resolve the type and check which combinations of Some and None callers need. If the signature permits invalid combinations, use an enum whose variants carry the permitted values.
+    ");
+}
+
+#[test]
+fn option_plumbing_passthrough() {
+    assert_snapshot!(check("src/lib.rs", "fn project(image: Option<Image>) -> Result<Option<Image>, E> { todo!() }\n", &Config::default()), @"
+    lint[option-plumbing]: parameter `image` and the return type of `project` both spell `Option<Image>`
+      ╭▸ src/lib.rs:1:12
+      │
+    1 │ fn project(image: Option<Image>) -> Result<Option<Image>, E> { todo!() }
+      │            ┯━━━━━━━━━━━━━━━━━━━            ───────────── matching name and arguments in the return type
+      │            │
+      │            parameter type
+      │
+      ╰ help: Check that both paths resolve to the same optional type, then trace what the function returns for Some and None. If it forwards absence, handle None at the caller. Keep the optional result when the function decides whether a value is present.
+    ");
+}
+
+#[test]
+fn option_plumbing_skips_ffi() {
+    let text = r#"extern "C" fn cb(a: Option<u8>, b: Option<u8>) {}
+unsafe fn raw(a: Option<u8>, b: Option<u8>) {}
+fn hooks(a: Option<fn()>, b: Option<fn()>) {}
+"#;
+    assert!(
+        !rules(text).contains(&"option-plumbing"),
+        "{:?}",
+        rules(text)
+    );
+}
+
+#[test]
 fn json_in_domain() {
     assert_snapshot!(check("src/audit.rs", r#"
 use serde_json::{Map, Value};

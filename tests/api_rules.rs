@@ -105,6 +105,31 @@ fn compatibility_lint_labels_the_marked_api_and_what_its_body_calls() {
     }));
 }
 
+#[derive(Clone, Debug, hegel::DefaultGenerator)]
+enum WrittenType {
+    Direct,
+    Qualified,
+    OtherModule,
+    Nested,
+    SimilarName,
+    CommentOnly,
+}
+
+#[hegel::test]
+fn option_plumbing_matches_written_option_types(tc: hegel::TestCase) {
+    let shape = tc.draw(hegel::generators::default::<WrittenType>());
+    let (output, expected) = match shape {
+        WrittenType::Direct => ("Option < u8 >", 1),
+        WrittenType::Qualified => ("std::option::Option<u8>", 1),
+        WrittenType::OtherModule => ("wire::Option<u8>", 1),
+        WrittenType::Nested => ("Vec<Option<u8>>", 1),
+        WrittenType::SimilarName => ("NonOption<u8>", 0),
+        WrittenType::CommentOnly => ("Vec</* Option<u8> */ u8>", 0),
+    };
+    let source = format!("fn encode(value: Option<u8>) -> {output} {{ todo!() }}");
+    assert_eq!(findings(&source, "option-plumbing").len(), expected);
+}
+
 #[test]
 fn shallow_helpers_include_void_forwarders_getters_and_plain_record_factories() {
     let text = include_str!("../fixtures/feedback/api/shallow.rs");

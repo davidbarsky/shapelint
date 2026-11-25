@@ -5,6 +5,7 @@ use crate::contracts::graph::{CapacityError, ConditionId, ExprId, Graph, NodeId,
 use crate::contracts::{CheckBasis, Invocation, Writes};
 use crate::sequence::Sequence;
 use crate::values::{self, Values};
+use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
 use std::ops::Index;
 
@@ -40,6 +41,13 @@ impl<'g> Graph<'g> {
         std::iter::from_fn(move || cursor.next(self))
     }
 
+    pub(crate) fn sole_function(&self, functions: SetId<'g, DefId>) -> Option<DefId> {
+        match self.function_sets[functions].kind {
+            crate::contracts::graph::sets::NodeKind::Leaf(def) => Some(def),
+            _ => None,
+        }
+    }
+
     pub(crate) fn argument_set(
         &mut self,
         positions: impl IntoIterator<Item = usize>,
@@ -69,6 +77,21 @@ impl<'g> Graph<'g> {
     ) -> Result<(), CapacityError> {
         let argument = self.input_sets.insert(SetId::EMPTY, position)?;
         writes.merge(&Writes::Arguments(argument), self)
+    }
+
+    pub(crate) fn escaped_argument_functions(
+        &mut self,
+        arguments: Sequence<'g, ExprId<'g>>,
+        escaped_positions: SetId<'g, usize>,
+        functions: &mut FxHashSet<DefId>,
+    ) -> Result<(), CapacityError> {
+        let mut cursor = Cursor::from(escaped_positions);
+        while let Some(position) = cursor.next(&self.input_sets) {
+            if let Some(&argument) = self.expression_sequences.get(arguments, position) {
+                self.functions(argument, functions)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn include_guard(

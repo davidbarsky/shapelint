@@ -5,6 +5,7 @@ use rustc_ast::{
     ast,
     visit::{self, Visitor},
 };
+use rustc_ast_pretty::pprust;
 use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_span::symbol::Ident;
 
@@ -671,14 +672,23 @@ struct Param {
 }
 
 #[derive(Default)]
-struct ReturnTypes {
+struct ReturnTypes<'ast> {
     widest_tuple: usize,
+    options: Vec<&'ast ast::PathSegment>,
 }
 
-impl<'ast> Visitor<'ast> for ReturnTypes {
+impl<'ast> Visitor<'ast> for ReturnTypes<'ast> {
     fn visit_ty(&mut self, ty: &'ast ast::Ty) {
         match &ty.kind {
             ast::TyKind::Tup(fields) => self.widest_tuple = self.widest_tuple.max(fields.len()),
+            ast::TyKind::Path(_, path) => {
+                if let Some(segment) = path.segments.last()
+                    && segment.ident.name.as_str() == "Option"
+                    && let Some(ast::GenericArgs::AngleBracketed(_)) = segment.args.as_deref()
+                {
+                    self.options.push(segment);
+                }
+            }
             _ => {}
         }
         visit::walk_ty(self, ty);
@@ -781,6 +791,9 @@ fn check_fn(sink: &mut Sink, cx: &Context<'_, '_>, function: &Function<'_>) {
         if !name.starts_with("assert") {
             check_passthrough(sink, cx, function, &path, &params, &ret, &item);
         }
+    }
+    if let None = trait_impl {
+        option_plumbing(sink, file, node, &path, &returns.options, &item);
     }
     if let Some(ret_ty) = ret_ty {
         if let Some(()) = cx.domain_json_type(&ret) {
@@ -1108,6 +1121,93 @@ fn check_passthrough(
         ));
     }
     sink.emit("check-passthrough", item.span, item.name.clone(), report);
+}
+
+fn option_plumbing(
+    sink: &mut Sink,
+    file: &RustFile<'_>,
+    function: &ast::Fn,
+    path: &str,
+    return_options: &[&ast::PathSegment],
+    item: &EnclosingItem,
+) {
+    match (function.sig.header.ext, function.sig.header.safety) {
+        (ast::Extern::None, ast::Safety::Default | ast::Safety::Safe(_)) => {}
+        _ => return,
+    }
+    let mut groups: IndexMap<String, Vec<&ast::Param>> = IndexMap::new();
+    for param in &function.sig.decl.inputs {
+        let ast::TyKind::Path(None, path) = &param.ty.kind else {
+            continue;
+        };
+        let [segment] = path.segments.as_slice() else {
+            continue;
+        };
+        if segment.ident.name.as_str() == "Option"
+            && let Some(ast::GenericArgs::AngleBracketed(_)) = segment.args.as_deref()
+        {
+            let ty = pprust::ty_to_string(&param.ty);
+            if !ty.contains("fn(") {
+                groups.entry(ty).or_default().push(param);
+            }
+        }
+    }
+    if groups.is_empty() {
+        return;
+    }
+    let repeated: Vec<_> = groups
+        .iter()
+        .filter(|(_, members)| match members.as_slice() {
+            [_, _, ..] => true,
+            [] | [_] => false,
+        })
+        .collect();
+    if !repeated.is_empty() {
+        for (ty, members) in repeated {
+            let names = members
+                .iter()
+                .map(|param| Code(file.text(param.pat.span)).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut report = Report::new(
+                format!(
+                    "{} declares {} separate {} parameters ({names})",
+                    Code(path),
+                    members.len(),
+                    Code(short(ty, 40))
+                ),
+                file.span(members[0].span),
+                "same written parameter type",
+            );
+            for param in &members[1..] {
+                report = report.label(file.span(param.span), "same written parameter type");
+            }
+            report = report.help("Resolve the type and check which combinations of Some and None callers need. If the signature permits invalid combinations, use an enum whose variants carry the permitted values.");
+            sink.emit("option-plumbing", item.span, item.name.clone(), report);
+        }
+        return;
+    }
+    for returned in return_options {
+        let ty = pprust::path_segment_to_string(returned);
+        let Some(params) = groups.shift_remove(&ty) else {
+            continue;
+        };
+        for param in params {
+            let report = Report::new(
+                format!(
+                    "parameter {} and the return type of {} both spell {}",
+                    Code(file.text(param.pat.span)),
+                    Code(path),
+                    Code(short(&ty, 40)),
+                ),
+                file.span(param.span),
+                "parameter type",
+            )
+            .label(file.span(returned.span()), "matching name and arguments in the return type")
+            .help("Check that both paths resolve to the same optional type, then trace what the function returns for Some and None. If it forwards absence, handle None at the caller. Keep the optional result when the function decides whether a value is present.");
+            sink.emit("option-plumbing", item.span, item.name.clone(), report);
+        }
+    }
 }
 
 fn check_struct(
