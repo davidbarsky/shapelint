@@ -13,6 +13,7 @@ extern crate rustc_parse;
 extern crate rustc_session;
 extern crate rustc_span;
 
+mod api_rules;
 mod config;
 mod control_flow;
 mod diagnostic;
@@ -26,6 +27,7 @@ mod suppress;
 mod test_review_rules;
 mod text_rules;
 mod text_syntax;
+mod workspace;
 
 pub use config::{
     CONFIG_KEYS, Config, ConfigParse, ConfigWarning, PathPattern, SourceMode, Thresholds,
@@ -69,11 +71,15 @@ const STACK_BASE: usize = 8 << 20;
 // Both profiles use the same prebuilt rustc parser for nested blocks.
 const STACK_PER_TOKEN: usize = 4 << 10;
 
+/// Findings are limited to the supplied source; use [`lint_sources`] to count implementations
+/// across files.
 pub fn lint(input: &SourceInput, config: &Config) -> Result<Vec<Finding>, LintError> {
     let findings = lint_sources(std::slice::from_ref(input), config)?;
     Ok(findings.into_iter().flatten().collect())
 }
 
+/// Returns one finding list per input, in input order. Trait implementation counts cover only
+/// these sources, including any supplied test files; this is not Cargo name resolution.
 pub fn lint_sources(
     inputs: &[SourceInput],
     config: &Config,
@@ -102,12 +108,33 @@ pub fn lint_sources(
             })
             .collect::<Result<Vec<_>, _>>()
     })?;
-    Ok(analyses)
+    let facts: Vec<_> = analyses.iter().map(|analysis| &analysis.facts).collect();
+    let index = workspace::Index::new(&facts);
+    let mut results = Vec::with_capacity(inputs.len());
+    let sources = inputs.iter().zip(&analyses);
+    for (input, analysis) in sources {
+        let mut sink = diagnostic::Sink::new(input, config, &analysis.suppressions);
+        index.lint(&mut sink, &analysis.facts);
+        results.push(sink.finish()?);
+    }
+    let results_and_analyses = results.iter_mut().zip(analyses);
+    for (findings, analysis) in results_and_analyses {
+        findings.extend(analysis.findings);
+        findings.sort_by_key(|finding| finding.primary.span);
+    }
+    Ok(results)
 }
 
-fn analyze(input: &SourceInput, config: &Config) -> Result<Vec<Finding>, LintError> {
+#[derive(Default)]
+struct Analysis {
+    findings: Vec<Finding>,
+    facts: workspace::Facts,
+    suppressions: suppress::Suppressions,
+}
+
+fn analyze(input: &SourceInput, config: &Config) -> Result<Analysis, LintError> {
     let Some(language) = Language::of(&input.name) else {
-        return Ok(Vec::new());
+        return Ok(Analysis::default());
     };
     if language != Language::Rust {
         return lint_here(input, config, language);
@@ -137,7 +164,7 @@ fn lint_here(
     input: &SourceInput,
     config: &Config,
     language: Language,
-) -> Result<Vec<Finding>, LintError> {
+) -> Result<Analysis, LintError> {
     match language {
         Language::Rust => rust_syntax::parse(input, |file| {
             let suppressions = rust_suppressions(input)?;
@@ -147,10 +174,17 @@ fn lint_here(
                 None => expression_rules::JsonContext::Domain,
             };
             rust_rules::lint(&mut sink, file, input, config, boundary);
+            api_rules::lint(&mut sink, file);
             expression_rules::lint(&mut sink, file, boundary);
             test_review_rules::lint(&mut sink, file);
             sink.report_unknown();
-            sink.finish()
+            let mut facts = workspace::collect(file);
+            facts.path = input.name.to_string();
+            Ok(Analysis {
+                findings: sink.finish()?,
+                facts,
+                suppressions,
+            })
         })?,
         Language::Toml | Language::Starlark => {
             let tokens = text_syntax::lex(input.as_ref(), language);
@@ -162,7 +196,11 @@ fn lint_here(
                 Language::Rust => unreachable!(),
             }
             sink.report_unknown();
-            sink.finish()
+            Ok(Analysis {
+                findings: sink.finish()?,
+                facts: workspace::Facts::default(),
+                suppressions,
+            })
         }
     }
 }

@@ -89,6 +89,29 @@ def report(reports, format, output=None):
     wire_sources = {}
     source_keys = {}
     encoded_sources = {}
+    trait_locations = {}
+    implementations = {}
+    finding_locations = {}
+
+    def workspace_path(directory, path):
+        path = Path(path)
+        if not path.is_absolute():
+            path = directory / path
+        return str(path.resolve())
+
+    def workspace_facts(directory, facts):
+        for trait in facts.get("traits", []):
+            location = trait["span"]
+            key = (workspace_path(directory, trait["path"]),
+                   location["start"], location["end"])
+            trait_locations.setdefault(key, set()).add(tuple(trait["identity"]))
+        for implementation in facts.get("implementations", []):
+            location = implementation["span"]
+            identity = tuple(implementation["trait_identity"])
+            key = (identity, workspace_path(directory, implementation["path"]),
+                   location["start"], location["end"])
+            implementations.setdefault(identity, set()).add(key)
+
     def source_identity(directory, original):
         cached = source_keys.get((str(directory), id(original)))
         if cached is not None:
@@ -113,6 +136,9 @@ def report(reports, format, output=None):
                 if record.get("record") == "header":
                     if record["version"] != 2:
                         raise ValueError("unsupported shapelint report stream version")
+                    continue
+                if record.get("record") == "workspace":
+                    workspace_facts(directory, record["facts"])
                     continue
                 if record.get("record") == "source":
                     source_table[record["id"]] = source_identity(directory, record["input"])
@@ -140,6 +166,17 @@ def report(reports, format, output=None):
                     related_key = tuple(locations)
                 key = (json.dumps(identity, sort_keys=True), related_key)
                 findings.setdefault(key, record)
+                finding_locations.setdefault(key, identity["path"])
+    for key, record in list(findings.items()):
+        finding = record["finding"]
+        if finding.get("rule") != "single-impl-trait":
+            continue
+        span = finding.get("primary", {}).get("span", {})
+        location = (finding_locations[key],
+                    span.get("start"), span.get("end"))
+        identities = trait_locations.get(location, ())
+        if any(len(implementations.get(identity, ())) > 1 for identity in identities):
+            del findings[key]
     records = sorted(findings.values(), key=cmp_to_key(
         lambda left, right: compare_records(left, right, encoded_sources)))
     for record in records:

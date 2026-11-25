@@ -15,6 +15,70 @@ spec.loader.exec_module(check)
 
 
 class ReportTest(unittest.TestCase):
+    def test_single_impl_finding_is_removed_when_another_target_has_an_impl(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "first.jsonl"
+            second = root / "second.jsonl"
+            identity = [11, 22]
+            finding = {
+                "path": "src/lib.rs",
+                "fingerprint": "single",
+                "rule": "single-impl-trait",
+                "primary": {"span": {"start": 4, "end": 8}},
+            }
+            header = {"record": "header", "version": 2}
+            trait = {"identity": identity, "path": "src/lib.rs",
+                     "span": {"start": 4, "end": 8}}
+            first.write_text("".join([
+                json.dumps(header) + "\n",
+                json.dumps({"record": "workspace", "facts": {
+                    "traits": [trait],
+                    "implementations": [{"trait_identity": identity, "path": "src/lib.rs",
+                                          "span": {"start": 20, "end": 40}},
+                                         ],
+                }}) + "\n",
+                json.dumps(finding) + "\n",
+            ]))
+            second.write_text("".join([
+                json.dumps(header) + "\n",
+                json.dumps({"record": "workspace", "facts": {
+                    "traits": [],
+                    "implementations": [{"trait_identity": identity, "path": "tests/fake.rs",
+                                          "span": {"start": 10, "end": 30}},
+                                         ],
+                }}) + "\n",
+            ]))
+            output = io.StringIO()
+            check.report([(root, first), (root, second)], "json", output)
+            self.assertEqual("", output.getvalue())
+
+    def test_single_impl_finding_remains_for_one_workspace_implementation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            report = root / "report.jsonl"
+            identity = [11, 22]
+            finding = {
+                "path": "src/lib.rs",
+                "fingerprint": "single",
+                "rule": "single-impl-trait",
+                "primary": {"span": {"start": 4, "end": 8}},
+            }
+            report.write_text("".join([
+                json.dumps({"record": "header", "version": 2}) + "\n",
+                json.dumps({"record": "workspace", "facts": {
+                    "traits": [{"identity": identity, "path": "src/lib.rs",
+                                "span": {"start": 4, "end": 8}}],
+                    "implementations": [{"trait_identity": identity, "path": "src/lib.rs",
+                                          "span": {"start": 20, "end": 40}},
+                                         ],
+                }}) + "\n",
+                json.dumps(finding) + "\n",
+            ]))
+            output = io.StringIO()
+            check.report([(root, report)], "json", output)
+            self.assertEqual([finding], [json.loads(output.getvalue())])
+
     def test_transports_deduplicate_normalized_paths_and_preserve_output(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -176,9 +176,34 @@ pub const RULES: &[Rule] = &[
         summary: "thread/task-local or global mutable context hides a dependency",
     },
     Rule {
+        id: "conversion-trait",
+        set: RuleSet::Lints,
+        summary: "bespoke representation conversion resembles a standard trait",
+    },
+    Rule {
+        id: "single-impl-trait",
+        set: RuleSet::Lints,
+        summary: "trait has only one implementation in the supplied sources",
+    },
+    Rule {
+        id: "parallel-api",
+        set: RuleSet::Lints,
+        summary: "entry points with related names appear in the same scope",
+    },
+    Rule {
+        id: "collection-choice",
+        set: RuleSet::Lints,
+        summary: "a collection path names BTreeMap or BTreeSet",
+    },
+    Rule {
         id: "redundant-comment",
         set: RuleSet::Lints,
         summary: "comment restates adjacent code or carries TODO/section scaffolding",
+    },
+    Rule {
+        id: "compatibility-scaffolding",
+        set: RuleSet::Lints,
+        summary: "a call in a compatibility-named or deprecated function, a deprecated alias, or an alternate serialized field name",
     },
     Rule {
         id: "unknown-allow",

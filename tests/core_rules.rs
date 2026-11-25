@@ -170,6 +170,65 @@ async fn verify(x: u8) -> Result<(), E> { if x == 0 { return Err(E); } Ok(()) }
 }
 
 #[test]
+fn json_in_domain() {
+    assert_snapshot!(check("src/audit.rs", r#"
+use serde_json::{Map, Value};
+struct Stamp { provenance: Map<String, Value> }
+fn build() -> Value { if x { json!({"kind": "a"}) } else { json!({"kind": "b"}) } }
+"#, &Config::default()), @r#"
+    lint[json-in-domain]: module imports generic JSON types but is not a JSON boundary
+      ╭▸ src/audit.rs:2:1
+      │
+    2 │ use serde_json::{Map, Value};
+      │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ generic JSON enters domain code here
+      │
+      ╰ help: parse known structure into types and keep `Value`/`Map` at the wire edge, or list this path under `json-boundary` in `.shapelint`
+
+    lint[json-in-domain]: `Stamp.provenance` stores generic JSON (`Map<String, Value>`)
+      ╭▸ src/audit.rs:3:28
+      │
+    3 │ struct Stamp { provenance: Map<String, Value> }
+      │                            ━━━━━━━━━━━━━━━━━━ generic JSON stored here
+      │
+      ╰ help: type the known fields; if an open map remains, make its values typed
+
+    lint[json-in-domain]: `build` returns generic JSON (`Value`)
+      ╭▸ src/audit.rs:4:15
+      │
+    4 │ fn build() -> Value { if x { json!({"kind": "a"}) } else { json!({"kind": "b"}) } }
+      │               ━━━━━ generic JSON returned here
+      │
+      ├ help: return a struct or enum and serialize it at the edge
+      ╰ note: its body builds 2 `json!` objects
+
+    lint[json-in-domain]: constructs JSON with a macro outside the configured boundary
+      ╭▸ src/audit.rs:4:30
+      │
+    4 │ fn build() -> Value { if x { json!({"kind": "a"}) } else { json!({"kind": "b"}) } }
+      │                              ━━━━ generic JSON construction
+      │
+      ╰ help: serialize a typed struct or enum at the JSON boundary
+
+    lint[json-in-domain]: constructs JSON with a macro outside the configured boundary
+      ╭▸ src/audit.rs:4:60
+      │
+    4 │ fn build() -> Value { if x { json!({"kind": "a"}) } else { json!({"kind": "b"}) } }
+      │                                                            ━━━━ generic JSON construction
+      │
+      ╰ help: serialize a typed struct or enum at the JSON boundary
+    "#);
+}
+
+#[test]
+fn json_boundary_is_silent() {
+    let config = Config {
+        json_boundary: vec!["src/wire".parse().expect("valid path pattern")],
+        ..Config::default()
+    };
+    assert_snapshot!(check("src/wire/dto.rs", "use serde_json::Value;\nfn build() -> Value { todo!() }\n", &config), @"");
+}
+
+#[test]
 fn config_bag() {
     assert_snapshot!(check("src/bin/topics.rs", r#"
 #[derive(Deserialize)]
@@ -190,6 +249,15 @@ impl Connector {
       │     ━━━━━━━━━━ catch-all for config the type doesn't model
       │
       ╰ help: deserialize known keys into typed fields or variants; keep the map only for true extensions
+
+    lint[collection-choice]: this path names `BTreeMap`
+      ╭▸ src/bin/topics.rs:6:17
+      │
+    6 │     properties: BTreeMap<String, String>,
+      │                 ━━━━━━━━ collection named here
+      │
+      ├ help: Resolve the type and trace its uses. Keep the tree for key ranges or key-ordered output. For lookup alone, consider a hash collection. For insertion order, consider an insertion-ordered collection.
+      ╰ note: The source check matches the written type name. Callers determine the ordering contract.
 
     lint[config-bag]: `Connector::topics` re-parses deserialized config at use time
       ╭▸ src/bin/topics.rs:9:8

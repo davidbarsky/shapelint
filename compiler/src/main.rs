@@ -9,6 +9,7 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_mir_transform;
 extern crate rustc_session;
+extern crate rustc_span;
 extern crate rustc_structures;
 
 use shapelint::{Style, render};
@@ -19,7 +20,10 @@ use std::sync::OnceLock;
 
 use rustc_data_structures::steal::Steal;
 use rustc_driver::{Callbacks, Compilation};
+use rustc_hir::def::Res;
 use rustc_hir::def_id::LocalDefId;
+use rustc_hir::intravisit::{self, Visitor};
+use rustc_hir::{Item, ItemKind};
 use rustc_index::IndexVec;
 use rustc_interface::interface;
 use rustc_middle::mir::{Body, Promoted};
@@ -58,6 +62,103 @@ enum Record<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         rendered: Option<String>,
     },
+    Workspace {
+        facts: WorkspaceFacts,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct WorkspaceFacts {
+    traits: Vec<WorkspaceTrait>,
+    implementations: Vec<WorkspaceImplementation>,
+}
+
+#[derive(serde::Serialize)]
+struct WorkspaceTrait {
+    identity: [u64; 2],
+    path: String,
+    span: shapelint::Span,
+}
+
+#[derive(serde::Serialize)]
+struct WorkspaceImplementation {
+    trait_identity: [u64; 2],
+    path: String,
+    span: shapelint::Span,
+}
+
+impl WorkspaceFacts {
+    fn collect(tcx: TyCtxt<'_>) -> Self {
+        let mut collector = WorkspaceCollector {
+            tcx,
+            facts: Self {
+                traits: Vec::new(),
+                implementations: Vec::new(),
+            },
+        };
+        tcx.hir_visit_all_item_likes_in_crate(&mut collector);
+        collector.facts
+    }
+}
+
+struct WorkspaceCollector<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    facts: WorkspaceFacts,
+}
+
+impl<'tcx> Visitor<'tcx> for WorkspaceCollector<'tcx> {
+    fn visit_item(&mut self, item: &'tcx Item<'tcx>) {
+        match &item.kind {
+            ItemKind::Trait { ident, .. } => {
+                if let Some((path, span)) = source_location(self.tcx, ident.span) {
+                    self.facts.traits.push(WorkspaceTrait {
+                        identity: definition_identity(self.tcx, item.owner_id.def_id.to_def_id()),
+                        path,
+                        span,
+                    });
+                }
+            }
+            ItemKind::Impl(implementation) => {
+                if let Some(trait_ref) = &implementation.of_trait
+                    && let rustc_hir::ImplPolarity::Positive = trait_ref.polarity
+                    && let Res::Def(_, trait_def) = trait_ref.trait_ref.path.res
+                    && let Some((path, span)) = source_location(self.tcx, item.span)
+                {
+                    self.facts.implementations.push(WorkspaceImplementation {
+                        trait_identity: definition_identity(self.tcx, trait_def),
+                        path,
+                        span,
+                    });
+                }
+            }
+            _ => {}
+        }
+        intravisit::walk_item(self, item);
+    }
+}
+
+fn definition_identity(tcx: TyCtxt<'_>, def: rustc_hir::def_id::DefId) -> [u64; 2] {
+    let (crate_hash, local_hash) = tcx.def_path_hash(def).0.split();
+    [crate_hash.as_u64(), local_hash.as_u64()]
+}
+
+fn source_location(tcx: TyCtxt<'_>, span: rustc_span::Span) -> Option<(String, shapelint::Span)> {
+    if span.is_dummy() || span.from_expansion() {
+        return None;
+    }
+    let span = span.source_callsite();
+    let file = tcx.sess.source_map().lookup_source_file(span.lo());
+    if file.is_imported() || !file.contains(span.hi()) {
+        return None;
+    }
+    let name = file.name.prefer_local_unconditionally().to_string();
+    Some((
+        name,
+        shapelint::Span {
+            start: file.original_relative_byte_pos(span.lo()).0,
+            end: file.original_relative_byte_pos(span.hi()).0,
+        },
+    ))
 }
 
 #[derive(serde::Serialize)]
@@ -177,6 +278,7 @@ impl Callbacks for Driver {
             Ok(sources) => sources,
             Err(error) => tcx.dcx().fatal(error.to_string()),
         };
+        self.diagnostics.workspace = Some(WorkspaceFacts::collect(tcx));
         if let Err(error) = self.diagnostics.write(sources) {
             tcx.dcx()
                 .fatal(format!("shapelint diagnostics output: {error}"));
@@ -192,6 +294,7 @@ impl Callbacks for Driver {
 struct Diagnostics {
     output: Output,
     writer: Box<dyn Write + Send>,
+    workspace: Option<WorkspaceFacts>,
 }
 
 impl Diagnostics {
@@ -236,6 +339,10 @@ impl Diagnostics {
         if let Output::Record(_) = self.output {
             serde_json::to_writer(&mut self.writer, &Record::Header { version: 2 })?;
             writeln!(self.writer)?;
+            if let Some(facts) = self.workspace.take() {
+                serde_json::to_writer(&mut self.writer, &Record::Workspace { facts })?;
+                writeln!(self.writer)?;
+            }
         }
         let mut source_ids = rustc_data_structures::fx::FxHashMap::default();
         // Keep each source allocation alive while its address identifies it in this stream.
@@ -330,6 +437,7 @@ fn main() -> ExitCode {
     let mut diagnostics = Diagnostics {
         output: Output::Text(style),
         writer: Box::new(BufWriter::new(std::io::stdout())),
+        workspace: None,
     };
     let mut cargo_output = CargoOutput::Other;
     let mut arguments = std::env::args();
