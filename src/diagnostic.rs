@@ -103,6 +103,13 @@ impl Report {
         self
     }
 
+    pub(crate) fn note(mut self, message: impl Into<String>) -> Report {
+        self.footers.push(Footer::Note {
+            message: message.into(),
+        });
+        self
+    }
+
     pub(crate) fn help(mut self, message: impl Into<String>) -> Report {
         self.footers.push(Footer::Help {
             message: message.into(),

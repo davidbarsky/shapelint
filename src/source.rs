@@ -142,6 +142,8 @@ pub(crate) struct SourceText {
     text: String,
     #[serde(skip)]
     starts: Vec<u32>,
+    #[serde(skip)]
+    comment_lines: Vec<Option<()>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -155,7 +157,15 @@ impl SourceText {
         let starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(at, _)| (at + 1) as u32))
             .collect();
-        SourceText { text, starts }
+        let comment_lines = text
+            .lines()
+            .map(|line| line.contains("//").then_some(()))
+            .collect();
+        SourceText {
+            text,
+            starts,
+            comment_lines,
+        }
     }
 
     fn lines_covering(&self, span: Span) -> (usize, std::ops::Range<usize>) {
@@ -203,6 +213,16 @@ impl SourceText {
             }
             current
         }
+    }
+
+    pub(crate) fn nearby_comment(&self, offset: u32, preceding: usize) -> Option<usize> {
+        let line = self.line_col(offset).line;
+        let start = line.saturating_sub(preceding).saturating_sub(1);
+        let end = (line + 1).min(self.comment_lines.len());
+        self.comment_lines[start..end]
+            .iter()
+            .enumerate()
+            .find_map(|(index, has_comment)| has_comment.map(|()| index + start))
     }
 }
 

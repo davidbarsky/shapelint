@@ -61,6 +61,46 @@ pub const RULES: &[Rule] = &[
         summary: "test cfg or tests under src create a separate production path",
     },
     Rule {
+        id: "shallow-helper",
+        set: RuleSet::Lints,
+        summary: "function body is one small expression with no branching (C15, C21, C22)",
+    },
+    Rule {
+        id: "check-passthrough",
+        set: RuleSet::Lints,
+        summary: "fallible check that returns Ok(()) or its own inputs: parse, don't validate (C05, C16, C17, C25, C26)",
+    },
+    Rule {
+        id: "config-bag",
+        set: RuleSet::Lints,
+        summary: "deserialized config re-parsed at use time, or a flattened String map (C03, C04)",
+    },
+    Rule {
+        id: "unit-fields",
+        set: RuleSet::Lints,
+        summary: "field names share a stem and use different unit suffixes (C14)",
+    },
+    Rule {
+        id: "identity-string",
+        set: RuleSet::Lints,
+        summary: "identity-like names (topic, source, destination, *_id) typed as strings (C09)",
+    },
+    Rule {
+        id: "byte-format",
+        set: RuleSet::Lints,
+        summary: "byte format hand-assembled from to_*_bytes() and concat() (C27)",
+    },
+    Rule {
+        id: "optional-state",
+        set: RuleSet::Lints,
+        summary: "methods re-prove that an Option field is Some (C13)",
+    },
+    Rule {
+        id: "blocking-rationale",
+        set: RuleSet::Lints,
+        summary: "spawn_blocking without a comment naming what blocks (C10)",
+    },
+    Rule {
         id: "duration-comment",
         set: RuleSet::Mechanical,
         summary: "large duration literal in config without a human-unit comment (C06)",
