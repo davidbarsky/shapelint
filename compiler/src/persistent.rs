@@ -1,4 +1,4 @@
-use rustc_data_structures::fx::FxHasher;
+use rustc_data_structures::fx::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -868,4 +868,72 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, F, R: Routing<K>> Composition<'g, K, V, F, 
 pub(crate) enum Part<'a, K, V, U> {
     Leaf(&'a K, &'a V),
     Branch(U, U),
+}
+pub(crate) struct Fold<'g, K, V, U> {
+    completed: FxHashMap<NodeId, U>,
+    marker: PhantomData<fn(&'g mut (K, V)) -> &'g mut (K, V)>,
+}
+impl<'g, K, V, U> Default for Fold<'g, K, V, U> {
+    fn default() -> Self {
+        Self {
+            completed: FxHashMap::default(),
+            marker: PhantomData,
+        }
+    }
+}
+impl<'g, K, V, U> Fold<'g, K, V, U> {
+    pub(crate) fn fold<'a, R, E>(
+        &'a mut self,
+        maps: &Maps<'g, K, V, R>,
+        map: Map<'g, K, V, R>,
+        mut operation: impl FnMut(Part<'_, K, V, &U>) -> Result<U, E>,
+    ) -> Result<Option<&'a U>, E>
+    where
+        E: From<CapacityError>,
+    {
+        enum Work {
+            Visit(NodeId),
+            Build {
+                node: NodeId,
+                left: NodeId,
+                right: NodeId,
+            },
+        }
+        let Some(root) = map.root else {
+            return Ok(None);
+        };
+        let mut pending = vec![Work::Visit(root)];
+        while let Some(work) = pending.pop() {
+            match work {
+                Work::Visit(id) => {
+                    if self.completed.contains_key(&id) {
+                        continue;
+                    }
+                    match maps.part(id) {
+                        Part::Leaf(key, value) => {
+                            let value = operation(Part::Leaf(key, value))?;
+                            self.completed.insert(id, value);
+                        }
+                        Part::Branch(left, right) => {
+                            pending.push(Work::Build {
+                                node: id,
+                                left,
+                                right,
+                            });
+                            pending.push(Work::Visit(right));
+                            pending.push(Work::Visit(left));
+                        }
+                    }
+                }
+                Work::Build { node, left, right } => {
+                    let value = operation(Part::Branch(
+                        &self.completed[&left],
+                        &self.completed[&right],
+                    ))?;
+                    self.completed.insert(node, value);
+                }
+            }
+        }
+        Ok(self.completed.get(&root))
+    }
 }

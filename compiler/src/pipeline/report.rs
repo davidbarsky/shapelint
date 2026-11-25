@@ -827,6 +827,12 @@ impl<'g> Evaluator<'_, '_, 'g> {
     ) -> Result<Vec<(LocalDefId, states::Finding)>, CapacityError> {
         let mut findings = self.review_findings(context)?;
         findings.extend(self.boundary_findings(context, scope)?);
+        findings.extend(crate::protocols::findings(
+            context.tcx,
+            self.graph,
+            context.summaries,
+            context.sources,
+        )?);
         Ok(findings)
     }
 }

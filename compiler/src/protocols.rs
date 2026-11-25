@@ -1,11 +1,19 @@
 pub use crate::contracts::graph::flows::{Flow, Obligation, Return};
-use crate::contracts::graph::{CapacityError, ConditionId, FlowId, Graph};
+use crate::contracts::graph::{
+    AlternativeId, CapacityError, ConditionId, FlowId, Graph, GuardContextId,
+};
 
-use rustc_data_structures::fx::{FxHashSet, FxIndexSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::mir::Place;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::{Span, Symbol};
+use shapelint::CompilerEvidence;
+
+use crate::contracts::{Consumer, Operation, Truth};
+use crate::{diagnostics, states};
+
+mod projection;
 
 pub enum Action {
     Invalidate,
@@ -512,5 +520,365 @@ impl<'tcx, 'g, 'p> State<'tcx, 'g, 'p> {
             }
         }
         returned
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    Unchanged,
+    Ready,
+    Dirty(DefId, Span),
+    Unknown,
+}
+
+impl Effect {
+    fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unchanged, Self::Unchanged) => Self::Unchanged,
+            (Self::Ready, Self::Ready) => Self::Ready,
+            (Self::Dirty(def, span), Self::Dirty(..)) => Self::Dirty(def, span),
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Subject<'g> {
+    Flow(FlowId<'g>),
+    Prefix(AlternativeId<'g>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Demand {
+    Effect,
+    Witness,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Query<'g> {
+    subject: Subject<'g>,
+    demand: Demand,
+    name: Symbol,
+    guards: GuardContextId<'g>,
+}
+
+struct Queries<'a, 'p, 'g> {
+    graph: &'a mut Graph<'g>,
+    returns: FxHashMap<(DefId, Symbol, usize), AlternativeId<'g>>,
+    values: FxHashMap<Query<'g>, Effect>,
+    empty: GuardContextId<'g>,
+    projection: projection::Projection<'p, 'g>,
+}
+
+impl<'a, 'p, 'g> Queries<'a, 'p, 'g> {
+    fn try_new(
+        graph: &'a mut Graph<'g>,
+        summaries: &FxHashMap<DefId, crate::contracts::summaries::SummaryId<'g>>,
+    ) -> Result<Self, CapacityError> {
+        let mut returns = FxHashMap::default();
+        for (callee, summary) in summaries {
+            let summary = graph[*summary];
+            let mut returned = graph.scan(summary.protocol_returns);
+            while let Some(returned) = returned.next() {
+                let key = (*callee, returned.name, returned.argument);
+                let prefix = graph.intern_alternative(returns.get(&key).copied(), returned.flow)?;
+                returns.insert(key, prefix);
+            }
+        }
+        let empty = GuardContextId::from(crate::sequence::Sequence::EMPTY);
+        let mut roots: Vec<_> = returns.values().copied().map(Subject::Prefix).collect();
+        let mut guards = Vec::new();
+        for summary in summaries.values() {
+            let summary = graph[*summary];
+            for check in graph.items(summary.protocol_checks) {
+                roots.push(Subject::Flow(check.flow));
+                guards.push(check.guards);
+            }
+        }
+        let projection = projection::Projection::try_new(graph, roots, guards)?;
+        Ok(Self {
+            graph,
+            returns,
+            values: FxHashMap::default(),
+            empty,
+            projection,
+        })
+    }
+}
+
+impl<'p, 'g> crate::contracts::schedule::Engine for Queries<'_, 'p, 'g> {
+    type Query = Query<'g>;
+    type Answer = Effect;
+    type Error = CapacityError;
+    type Frame = Query<'g>;
+
+    fn lookup(
+        &mut self,
+        query: &Query<'g>,
+    ) -> Result<crate::contracts::schedule::Lookup<Effect>, CapacityError> {
+        let guards = self
+            .projection
+            .project(self.graph, query.subject, query.guards)?;
+        let query = Query { guards, ..*query };
+        Ok(match self.values.get(&query) {
+            Some(answer) => crate::contracts::schedule::Lookup::Ready(*answer),
+            None => crate::contracts::schedule::Lookup::Missing,
+        })
+    }
+
+    fn enter(&mut self, query: Query<'g>) -> Result<Query<'g>, CapacityError> {
+        let guards = self
+            .projection
+            .project(self.graph, query.subject, query.guards)?;
+        let query = Query { guards, ..query };
+        // Every demanded effect dependency is Unknown-strict: joins preserve
+        // Unknown, and calls inspect their input only after an Unchanged callee.
+        // A demanded cycle therefore stays Unknown; no completed prefix retries.
+        // Witness dependencies follow the acyclic flow/prefix graph and only
+        // cross into effects, never the reverse.
+        self.values.insert(query, Effect::Unknown);
+        Ok(query)
+    }
+
+    fn finish(
+        &mut self,
+        query: Query<'g>,
+        answer: Effect,
+    ) -> crate::contracts::schedule::Finished<Query<'g>, Effect> {
+        self.values.insert(query, answer);
+        crate::contracts::schedule::Finished::Ready(answer)
+    }
+
+    async fn execute(
+        session: crate::contracts::schedule::Session<'_, Self>,
+        query: Query<'g>,
+    ) -> Result<Effect, CapacityError> {
+        let guards = session.with(|engine| {
+            engine
+                .projection
+                .project(engine.graph, query.subject, query.guards)
+        })?;
+        let query = Query { guards, ..query };
+        let flow = match query.subject {
+            Subject::Prefix(prefix) => {
+                let (previous, value) = session.with(|engine| {
+                    let prefix = &engine.graph[prefix];
+                    (prefix.previous, prefix.value)
+                });
+                let previous = match previous {
+                    Some(previous) => Some(
+                        session
+                            .query(Query {
+                                subject: Subject::Prefix(previous),
+                                ..query
+                            })
+                            .await?,
+                    ),
+                    None => None,
+                };
+                if let (Demand::Witness, Some(effect @ Effect::Dirty(..))) =
+                    (query.demand, previous)
+                {
+                    return Ok(effect);
+                }
+                let next = session
+                    .query(Query {
+                        subject: Subject::Flow(value),
+                        ..query
+                    })
+                    .await?;
+                return Ok(match (query.demand, previous) {
+                    (Demand::Effect, Some(previous)) => previous.join(next),
+                    (Demand::Witness, _) | (Demand::Effect, None) => next,
+                });
+            }
+            Subject::Flow(flow) => session.with(|engine| engine.graph[flow].clone()),
+        };
+        Ok(match flow {
+            Flow::Incoming => Effect::Unchanged,
+            Flow::Unknown => Effect::Unknown,
+            Flow::Ready => Effect::Ready,
+            Flow::Dirty { def, span } => Effect::Dirty(def, span),
+            Flow::Alternatives(None) => Effect::Unknown,
+            Flow::Alternatives(Some(prefix)) => {
+                session
+                    .query(Query {
+                        subject: Subject::Prefix(prefix),
+                        ..query
+                    })
+                    .await?
+            }
+            Flow::Select(condition, yes, no) => {
+                let truth = session.with(|engine| {
+                    engine
+                        .graph
+                        .prove_in_context(condition, query.guards)
+                        .map(Truth::from)
+                })?;
+                match truth {
+                    Truth::Proven => {
+                        session
+                            .query(Query {
+                                subject: Subject::Flow(yes),
+                                ..query
+                            })
+                            .await?
+                    }
+                    Truth::Refuted => {
+                        session
+                            .query(Query {
+                                subject: Subject::Flow(no),
+                                ..query
+                            })
+                            .await?
+                    }
+                    Truth::Unknown(_) => {
+                        let (selected, otherwise) = match query.demand {
+                            Demand::Effect => (query.guards, query.guards),
+                            Demand::Witness => session.with(|engine| {
+                                let negated = engine.graph.negate(condition)?;
+                                Ok((
+                                    GuardContextId(engine.graph.push(query.guards.0, condition)?),
+                                    GuardContextId(engine.graph.push(query.guards.0, negated)?),
+                                ))
+                            })?,
+                        };
+                        let yes = session
+                            .query(Query {
+                                subject: Subject::Flow(yes),
+                                guards: selected,
+                                ..query
+                            })
+                            .await?;
+                        match (query.demand, yes) {
+                            (Demand::Witness, effect @ Effect::Dirty(..)) => effect,
+                            (demand, yes) => {
+                                let no = session
+                                    .query(Query {
+                                        subject: Subject::Flow(no),
+                                        guards: otherwise,
+                                        ..query
+                                    })
+                                    .await?;
+                                match demand {
+                                    Demand::Effect => yes.join(no),
+                                    Demand::Witness => no,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Flow::Call {
+                callee,
+                argument,
+                input,
+            } => {
+                if let Demand::Witness = query.demand {
+                    return session
+                        .query(Query {
+                            demand: Demand::Effect,
+                            ..query
+                        })
+                        .await;
+                }
+                let returned = session.with(|engine| {
+                    engine
+                        .returns
+                        .get(&(callee, query.name, argument))
+                        .map(|prefix| (*prefix, engine.empty))
+                });
+                let Some((prefix, guards)) = returned else {
+                    return Ok(Effect::Unknown);
+                };
+                let effect = session
+                    .query(Query {
+                        subject: Subject::Prefix(prefix),
+                        guards,
+                        ..query
+                    })
+                    .await?;
+                match effect {
+                    Effect::Unchanged => {
+                        session
+                            .query(Query {
+                                subject: Subject::Flow(input),
+                                ..query
+                            })
+                            .await?
+                    }
+                    effect => effect,
+                }
+            }
+        })
+    }
+}
+
+pub fn findings<'g>(
+    tcx: TyCtxt<'_>,
+    graph: &mut Graph<'g>,
+    summaries: &FxHashMap<DefId, crate::contracts::summaries::SummaryId<'g>>,
+    sources: &diagnostics::Sources,
+) -> Result<Vec<(rustc_hir::def_id::LocalDefId, states::Finding)>, CapacityError> {
+    Queries::try_new(graph, summaries)?.findings(tcx, summaries, sources)
+}
+
+impl<'g> Queries<'_, '_, 'g> {
+    fn findings(
+        mut self,
+        tcx: TyCtxt<'_>,
+        summaries: &FxHashMap<DefId, crate::contracts::summaries::SummaryId<'g>>,
+        sources: &diagnostics::Sources,
+    ) -> Result<Vec<(rustc_hir::def_id::LocalDefId, states::Finding)>, CapacityError> {
+        let mut findings = Vec::new();
+        for (owner, summary) in summaries {
+            let Some(local) = owner.as_local() else {
+                continue;
+            };
+            let summary = self.graph[*summary];
+            let mut obligations = self.graph.scan(summary.protocol_checks);
+            while let Some(obligation) = obligations.next() {
+                let guards = GuardContextId::from(obligation.guards);
+                let query = Query {
+                    subject: Subject::Flow(obligation.flow),
+                    demand: Demand::Witness,
+                    name: obligation.name,
+                    guards,
+                };
+                let Effect::Dirty(def, origin) =
+                    crate::contracts::schedule::evaluate(&mut self, query)?
+                else {
+                    continue;
+                };
+                if let None = diagnostics::source_span(tcx, *owner, obligation.span) {
+                    continue;
+                }
+                if let None = diagnostics::source_span(tcx, def, origin) {
+                    continue;
+                }
+                let mut origin = Consumer {
+                    def,
+                    span: origin,
+                    operation: Operation::Condition,
+                }
+                .source(tcx, sources);
+                origin.label.message = format!(
+                    "this operation invalidates `{}` for the same resource",
+                    obligation.name
+                );
+                findings.push((
+                    local,
+                    states::Finding {
+                        span: obligation.span,
+                        evidence: CompilerEvidence::ProtocolBypass {
+                            protocol: obligation.name.to_string(),
+                            origin,
+                        },
+                    },
+                ));
+            }
+        }
+        findings.sort_by_key(|(def, finding)| (tcx.def_span(*def).lo(), finding.span.lo()));
+        Ok(findings)
     }
 }

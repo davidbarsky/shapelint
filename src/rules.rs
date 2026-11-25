@@ -101,6 +101,11 @@ pub const RULES: &[Rule] = &[
         summary: "a validator establishes a condition that downstream code checks again",
     },
     Rule {
+        id: "protocol-bypass",
+        set: RuleSet::Lints,
+        summary: "a path bypasses an explicitly declared resource protocol",
+    },
+    Rule {
         id: "test-only-production-path",
         set: RuleSet::Mechanical,
         summary: "test cfg or tests under src create a separate production path",

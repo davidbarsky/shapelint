@@ -124,10 +124,10 @@ macro_rules! arena_id {
 arena_id!(ExprId, ConditionId, FlowId, AlternativeId, RewriteId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GuardContextId<'g>(pub(crate) Sequence<'g, ConditionId<'g>>);
+pub(crate) struct GuardContextId<'g>(pub(crate) Sequence<'g, ConditionId<'g>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ArgumentContextId<'g>(pub(crate) Sequence<'g, ExprId<'g>>);
+pub(crate) struct ArgumentContextId<'g>(pub(crate) Sequence<'g, ExprId<'g>>);
 
 impl<'g> From<Sequence<'g, ConditionId<'g>>> for GuardContextId<'g> {
     fn from(sequence: Sequence<'g, ConditionId<'g>>) -> Self {

@@ -70,6 +70,10 @@ pub enum CompilerEvidence {
         condition: String,
         origin: Related,
     },
+    ProtocolBypass {
+        protocol: String,
+        origin: Related,
+    },
     UnnecessaryFallibility,
     UnnecessaryOptionality {
         parameter: String,
@@ -242,6 +246,10 @@ pub fn lint_compiler(
             CompilerEvidence::DiscardedValidation { condition, origin } => ("discarded-validation", Report::new("an earlier validator already establishes this recovery condition", *span, condition)
                 .related(origin.clone())
                 .help("Return a value that carries the validated invariant and consume it without revalidation.")),
+            CompilerEvidence::ProtocolBypass { protocol, origin } => ("protocol-bypass", Report::new(format!("a path bypasses the required `{protocol}` operation"), *span, "this operation can follow invalidation without re-establishing the guarantee")
+                .related(origin.clone())
+                .note("This follows an explicitly declared protocol on the same tracked resource.")
+                .help("Establish the guarantee on every path, or encode it in the resource type before this operation.")),
             CompilerEvidence::UnnecessaryFallibility => ("unnecessary-fallibility", Report::new("this function has no modeled error return", *span, "every normal return is Ok")
                 .note("All reachable return alternatives were resolved; this does not claim the function cannot panic or diverge.")
                 .help("Consider returning the successful value directly and removing the unnecessary error handling at callers.")),
