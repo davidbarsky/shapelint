@@ -24,6 +24,10 @@ impl std::fmt::Display for CheckOutcome {
 }
 
 pub enum CompilerEvidence {
+    Duplicate {
+        original: Related,
+    },
+
     ModuleCycle {
         members: Vec<String>,
         first_edge: String,
@@ -162,7 +166,38 @@ pub fn lint_compiler(
                 )
                 .help("Use the original Result here to preserve the error. If this boundary always supplies a fallback, carry the plain payload in its API."),
             ),
-            _ => continue,
+            CompilerEvidence::SerializationDetour { origin } => ("serialization-detour", Report::new("a typed value is serialized and immediately reconstructed", *span, "deserializes back into the original type")
+                .related(origin.clone())
+                .note("The serialized value reaches this decoder without an intervening mutation or external operation.")
+                .help("Pass the typed value directly unless this conversion deliberately normalizes data or tests a codec contract.")),
+            CompilerEvidence::BorrowedClone { uses } => {
+                let mut report = Report::new("this clone is used only through shared borrows", *span, "the original value can supply these reads")
+                    .note("Recognized buffer or handle cloning feeds only modeled read operations; no automatic rewrite is applied.")
+                    .help("Borrow the original value instead of creating a temporary clone.");
+                for usage in uses { report = report.related(usage.clone()); }
+                ("clone-only-to-borrow", report)
+            }
+            CompilerEvidence::Duplicate { original } => (
+                "duplicate-control-flow",
+                Report::new("regions have matching typed control flow", *span, "appears to duplicate the implementation above")
+                    .related(original.clone())
+                    .note("Compared before MIR optimization, including execution, cleanup, and suspension edges.")
+                    .help("Consider moving the shared operation into one implementation."),
+            ),
+            CompilerEvidence::InvalidVariant { observed, required } => (
+                "invalid-variant-access",
+                Report::new("variant extraction conflicts with the incoming MIR facts", *span, required)
+                    .note(format!("Known incoming state: {observed}"))
+                    .help("Handle the actual variant or correct the transition that produced it."),
+            ),
+            CompilerEvidence::UnencodedInvariant { guard, required } => (
+                "unencoded-state-invariant",
+                Report::new("a sibling-field guard does not establish the required variant", *span, required)
+                    .note(format!("Guarded state: {guard}"))
+                    .note("This is an inferred consumer assumption, not a declared domain invariant.")
+                    .help("Put the payload in the state variant, or match the payload at the boundary."),
+            ),
+
         };
         sink.emit(rule, *item_span, item, report);
     }

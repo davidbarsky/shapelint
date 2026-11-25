@@ -33,3 +33,4 @@ pub use pipeline::artifacts;
 pub mod hir_rules;
 pub use diagnostics::Located;
 mod architecture;
+pub mod regions;

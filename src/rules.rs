@@ -76,9 +76,34 @@ pub const RULES: &[Rule] = &[
         summary: "every call forwards the same field to a private function that uses it to decide how to handle another input (compiler driver only)",
     },
     Rule {
+        id: "serialization-detour",
+        set: RuleSet::Lints,
+        summary: "typed data is serialized and reconstructed without crossing a boundary",
+    },
+    Rule {
+        id: "clone-only-to-borrow",
+        set: RuleSet::Lints,
+        summary: "a recognized clone only feeds shared read operations",
+    },
+    Rule {
         id: "test-only-production-path",
         set: RuleSet::Mechanical,
         summary: "test cfg or tests under src create a separate production path",
+    },
+    Rule {
+        id: "duplicate-control-flow",
+        set: RuleSet::Lints,
+        summary: "regions have matching typed early MIR (compiler driver only)",
+    },
+    Rule {
+        id: "invalid-variant-access",
+        set: RuleSet::Lints,
+        summary: "variant extraction conflicts with incoming MIR facts (compiler driver only)",
+    },
+    Rule {
+        id: "unencoded-state-invariant",
+        set: RuleSet::Lints,
+        summary: "a sibling-field guard does not prove a required variant (compiler driver only)",
     },
     Rule {
         id: "shallow-helper",

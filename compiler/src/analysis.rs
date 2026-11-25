@@ -5,7 +5,7 @@ use rustc_middle::mir::{Body, StatementKind, TerminatorKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::{Span, Symbol};
 
-use crate::states;
+use crate::{regions, states};
 
 pub struct Session {
     graph: Graph<'static>,
@@ -65,11 +65,14 @@ impl Default for Session {
 pub enum Error {
     #[error(transparent)]
     Capacity(#[from] CapacityError),
+    #[error(transparent)]
+    Regions(#[from] regions::matching::Error),
 }
 
 pub struct Analysis<'g> {
     pub def: LocalDefId,
     pub span: Span,
+    pub regions: Option<regions::Captured>,
     pub contracts: SummaryId<'g>,
     pub findings: Vec<states::Finding>,
     pub invariants: Vec<states::Invariant>,
@@ -124,6 +127,11 @@ pub fn analyze<'tcx, 'g>(
     let analysis = Analysis {
         def,
         span: tcx.def_span(tcx.typeck_root_def_id(def.to_def_id())),
+        regions: if body.span.from_expansion() {
+            None
+        } else {
+            regions::candidates(tcx, def, &body)?
+        },
         contracts,
         findings,
         invariants,

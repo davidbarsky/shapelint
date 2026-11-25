@@ -858,6 +858,11 @@ impl<T, U> Default for PairedCache<'_, T, U> {
     }
 }
 impl<'g, T, U: Clone> PairedCache<'g, T, U> {
+    // shapelint: allow(shallow-helper) Cache length is a read-only observation used by diagnostics.
+    pub(crate) fn len(&self) -> usize {
+        self.completed.lock().len()
+    }
+
     // shapelint: allow(shallow-helper) Cache access is a short lock boundary outside callbacks.
     fn get(&self, pair: &(Slice, Slice)) -> Option<U> {
         self.completed.lock().get(pair).cloned()

@@ -255,12 +255,12 @@ impl Callbacks for Driver {
         } else {
             None
         };
-        session.analyses.finish(tcx, |graph, analyses| {
+        let local = session.analyses.finish(tcx, |graph, analyses| {
             let imported = match std::mem::take(&mut self.summary_inputs).import(tcx, graph) {
                 Ok(imported) => imported,
                 Err(error) => tcx.dcx().fatal(error.to_string()),
             };
-            let linked = pipeline::Summaries::link(analyses, imported);
+            let linked = pipeline::Summaries::link(&analyses, imported);
             if let Err(error) = pipeline::evaluate_crate(tcx, graph, &linked) {
                 tcx.dcx().fatal(error.to_string());
             }
@@ -271,11 +271,16 @@ impl Callbacks for Driver {
                     tcx.dcx().fatal(error.to_string());
                 }
             }
+            match pipeline::local_findings(analyses, tcx, &session.sources) {
+                Ok(local) => local,
+                Err(error) => tcx.dcx().fatal(error.to_string()),
+            }
         });
         let sources = match pipeline::SourceFindings::collect(
             tcx,
             &session.sources,
             &shapelint::Config::default(),
+            local,
         ) {
             Ok(sources) => sources,
             Err(error) => tcx.dcx().fatal(error.to_string()),
