@@ -103,6 +103,11 @@ impl Report {
         self
     }
 
+    pub(crate) fn related(mut self, related: Related) -> Report {
+        self.related.push(related);
+        self
+    }
+
     pub(crate) fn note(mut self, message: impl Into<String>) -> Report {
         self.footers.push(Footer::Note {
             message: message.into(),

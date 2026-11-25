@@ -89,6 +89,8 @@ impl SourceFindings {
             span,
             evidence,
         } in crate::hir_rules::findings(tcx)
+            .into_iter()
+            .chain(crate::architecture::findings(tcx, source_inputs)?)
         {
             let Some(span) = crate::diagnostics::source_span(tcx, def.to_def_id(), span) else {
                 continue;

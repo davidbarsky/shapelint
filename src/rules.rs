@@ -56,6 +56,26 @@ impl Rule {
 
 pub const RULES: &[Rule] = &[
     Rule {
+        id: "module-cycle",
+        set: RuleSet::Lints,
+        summary: "sibling modules depend on one another through resolved item references (compiler driver)",
+    },
+    Rule {
+        id: "tangle",
+        set: RuleSet::Lints,
+        summary: "types or free items depend on one another in a cycle (compiler driver only)",
+    },
+    Rule {
+        id: "field-leak",
+        set: RuleSet::Lints,
+        summary: "code outside a type operates directly on its internal fields (compiler driver only)",
+    },
+    Rule {
+        id: "forwarded-field",
+        set: RuleSet::Lints,
+        summary: "every call forwards the same field to a private function that uses it to decide how to handle another input (compiler driver only)",
+    },
+    Rule {
         id: "test-only-production-path",
         set: RuleSet::Mechanical,
         summary: "test cfg or tests under src create a separate production path",

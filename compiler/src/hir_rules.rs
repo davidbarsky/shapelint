@@ -1,7 +1,7 @@
 use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::{Expr, ExprKind, HirId, PatKind, QPath, StmtKind, UnOp};
+use rustc_hir::{Expr, ExprKind, HirId, Node, PatKind, QPath, StmtKind, UnOp};
 use rustc_middle::ty::{self, TyCtxt, TypeckResults};
 use rustc_span::{Span, Symbol};
 use shapelint::CompilerEvidence;
@@ -272,5 +272,78 @@ impl<'tcx> Visitor<'tcx> for Expressions<'tcx, '_> {
                 evidence,
             });
         }
+    }
+}
+
+pub(crate) struct DirectCall<'tcx> {
+    pub owner: LocalDefId,
+    pub typeck: &'tcx TypeckResults<'tcx>,
+    pub expr: &'tcx Expr<'tcx>,
+    pub arguments: &'tcx [Expr<'tcx>],
+    pub first_parameter: usize,
+}
+
+impl<'tcx> DirectCall<'tcx> {
+    pub fn argument(&self, parameter: usize) -> Option<&'tcx Expr<'tcx>> {
+        self.arguments
+            .get(parameter.checked_sub(self.first_parameter)?)
+    }
+}
+
+// A function path also escapes when used as a value in unreachable or generated code.
+pub(crate) fn function_uses<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    mut observe: impl FnMut(DefId, Option<DirectCall<'tcx>>),
+) {
+    struct Uses<'a, 'tcx, F> {
+        tcx: TyCtxt<'tcx>,
+        typeck: &'tcx TypeckResults<'tcx>,
+        owner: LocalDefId,
+        observe: &'a mut F,
+    }
+    impl<'tcx, F: FnMut(DefId, Option<DirectCall<'tcx>>)> Visitor<'tcx> for Uses<'_, 'tcx, F> {
+        fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
+            let direct = |expr, arguments, first_parameter| DirectCall {
+                owner: self.owner,
+                typeck: self.typeck,
+                expr,
+                arguments,
+                first_parameter,
+            };
+            match expr.kind {
+                ExprKind::MethodCall(_, _, args, _) => {
+                    if let Some(def) = self.typeck.type_dependent_def_id(expr.hir_id) {
+                        (self.observe)(def, Some(direct(expr, args, 1)));
+                    }
+                }
+                ExprKind::Path(ref path)
+                    if let Res::Def(DefKind::Fn | DefKind::AssocFn, def) =
+                        self.typeck.qpath_res(path, expr.hir_id) =>
+                {
+                    let usage = match self.tcx.parent_hir_node(expr.hir_id) {
+                        Node::Expr(call)
+                            if let ExprKind::Call(callee, args) = call.kind
+                                && callee.hir_id == expr.hir_id =>
+                        {
+                            Some(direct(call, args, 0))
+                        }
+                        _ => None,
+                    };
+                    (self.observe)(def, usage);
+                }
+                _ => {}
+            }
+            intravisit::walk_expr(self, expr);
+        }
+    }
+    for owner in tcx.hir_body_owners() {
+        let root = tcx.typeck_root_def_id(owner.to_def_id()).expect_local();
+        Uses {
+            tcx,
+            typeck: tcx.typeck(root),
+            owner,
+            observe: &mut observe,
+        }
+        .visit_body(tcx.hir_body_owned_by(owner));
     }
 }

@@ -13,6 +13,8 @@ extern crate rustc_span;
 extern crate rustc_structures;
 
 use shapelint::{Style, render};
+mod module_cycles;
+
 use std::io::{BufWriter, IsTerminal, Write};
 
 use std::process::ExitCode;
@@ -440,8 +442,11 @@ fn main() -> ExitCode {
         workspace: None,
     };
     let mut cargo_output = CargoOutput::Other;
-    let mut arguments = std::env::args();
+    let mut arguments = std::env::args().peekable();
     let mut args: Vec<_> = arguments.next().into_iter().collect();
+    if let Some(_) = arguments.next_if(|arg| arg == "module-cycles") {
+        return module_cycles::run(args, arguments, diagnostics, style);
+    }
     let mut summary_paths = Vec::new();
     let mut summary_output = None;
     while let Some(arg) = arguments.next() {
