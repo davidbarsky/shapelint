@@ -1,0 +1,22 @@
+[package]
+name = "shapelint-driver"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+boxcar = "0.2.14"
+parking_lot = "0.13.0"
+hashbrown = { version = "0.17.2", default-features = false, features = ["inline-more"] }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+hegeltest = "0.54.2"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
