@@ -557,7 +557,26 @@ fn compile(mut args: Vec<String>, callbacks: &mut (dyn Callbacks + Send)) -> Exi
         .find(|arg| *arg == "--sysroot" || arg.starts_with("--sysroot="))
     {
         Some(_) => {}
-        None => args.extend(["--sysroot".into(), env!("SHAPELINT_SYSROOT").into()]),
+        None => {
+            let executable = std::env::current_exe().ok();
+            let bundled_sysroot = executable
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .and_then(std::path::Path::parent)
+                .filter(|root| {
+                    root.join("lib/rustlib")
+                        .join(env!("SHAPELINT_HOST"))
+                        .join("lib")
+                        .is_dir()
+                });
+            let sysroot =
+                bundled_sysroot.unwrap_or_else(|| std::path::Path::new(env!("SHAPELINT_SYSROOT")));
+            let Some(sysroot) = sysroot.to_str() else {
+                eprintln!("shapelint-driver: sysroot path is not valid UTF-8");
+                return ExitCode::FAILURE;
+            };
+            args.extend(["--sysroot".into(), sysroot.into()]);
+        }
     }
     rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&args, callbacks))
 }
