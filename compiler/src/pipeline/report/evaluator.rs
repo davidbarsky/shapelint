@@ -29,7 +29,7 @@ use crate::contracts::{Arithmetic, CheckBasis, Invocation, Join, Order, Relocati
 use crate::values::{Dispatch, GenericsId, InstanceId, InstanceNode, OriginId};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChoiceTarget<'g> {
+pub(crate) enum ChoiceTarget<'g> {
     Indirect,
     Receiver(InstanceId<'g>),
 }
@@ -45,10 +45,10 @@ struct RequirementCore<'g> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RequirementId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
+pub(crate) struct RequirementId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RequirementPlanId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
+pub(crate) struct RequirementPlanId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum RequirementPlan<'g> {
@@ -61,7 +61,7 @@ enum RequirementPlan<'g> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReportDemand {
+pub(crate) enum ReportDemand {
     LocalFindings,
     ExportedContract,
 }
@@ -73,7 +73,7 @@ enum ReportDisposition {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RequirementOperation<'g> {
+pub(crate) enum RequirementOperation<'g> {
     Resolve,
     LocalFindings,
     Transform(ArgumentContextId<'g>, GuardContextId<'g>),
@@ -104,22 +104,22 @@ enum CacheSlot<'g> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct ResolvedRequirements<'g>(RequirementGroup<'g>);
+pub(crate) struct ResolvedRequirements<'g>(RequirementGroup<'g>);
 
-pub struct RequirementCursor<'g> {
+pub(crate) struct RequirementCursor<'g> {
     pending: Vec<Sequence<'g, RequirementPlanId<'g>>>,
     visited: FxHashSet<Sequence<'g, RequirementPlanId<'g>>>,
     state: std::rc::Rc<std::cell::RefCell<RequirementCursorState<'g>>>,
 }
 
 #[derive(Clone, Copy)]
-pub struct ResolvedRequirement<'g> {
-    pub requirement: Requirement<'g>,
-    pub condition: ConditionId<'g>,
-    pub outcome: Truth,
+pub(crate) struct ResolvedRequirement<'g> {
+    pub(crate) requirement: Requirement<'g>,
+    pub(crate) condition: ConditionId<'g>,
+    pub(crate) outcome: Truth,
 }
 
-pub enum RequirementReport<'g> {
+pub(crate) enum RequirementReport<'g> {
     Pending(RequirementId<'g>),
     Resolved(ResolvedRequirement<'g>),
 }
@@ -190,9 +190,9 @@ pub(crate) struct Requirements<'g> {
     members: FxHashMap<Span, SetId<'g, RequirementPlanId<'g>>>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RequirementsId<'g>(Sequence<'g, ReportGroup<'g>>);
+pub(crate) struct RequirementsId<'g>(Sequence<'g, ReportGroup<'g>>);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReturnGuardsId<'g>(Sequence<'g, Sequence<'g, ConditionId<'g>>>);
+pub(crate) struct ReturnGuardsId<'g>(Sequence<'g, Sequence<'g, ConditionId<'g>>>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Body<'g> {
@@ -204,7 +204,7 @@ struct Body<'g> {
 struct BodyId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub enum Query<'g> {
+pub(crate) enum Query<'g> {
     Reduced(ArgumentContextId<'g>, GuardContextId<'g>),
     ChoiceTargets(
         ChoiceId<'g>,
@@ -242,13 +242,13 @@ pub enum Query<'g> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Completion {
+pub(crate) enum Completion {
     Possible,
     Never,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum Answer<'g> {
+pub(crate) enum Answer<'g> {
     Reduced(Option<ExprId<'g>>),
     Expression(ExprId<'g>),
     Condition(ConditionId<'g>),
@@ -263,20 +263,20 @@ pub enum Answer<'g> {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Derivation {
+pub(crate) enum Derivation {
     #[default]
     Direct,
     Recursive,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Support<'g> {
+pub(crate) struct Support<'g> {
     pub facts: Evidence<'g>,
     pub derivation: Derivation,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Derived<'g, T = Answer<'g>> {
+pub(crate) struct Derived<'g, T = Answer<'g>> {
     value: T,
     support: Support<'g>,
 }
@@ -310,7 +310,7 @@ impl<'g> GuardPrefix<'g> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GuardPrefixId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
+pub(crate) struct GuardPrefixId<'g>(u32, std::marker::PhantomData<fn(&'g ()) -> &'g ()>);
 
 type Step<T> = Result<T, CapacityError>;
 
@@ -493,7 +493,7 @@ struct Activation<'g> {
     support: Support<'g>,
 }
 
-pub struct Frame<'g> {
+pub(crate) struct Frame<'g> {
     first_return: Option<DefId>,
     query: Query<'g>,
     previous: Option<Memo<Derived<'g>>>,
@@ -541,7 +541,7 @@ enum ReportSupport<'g> {
     Unknown,
 }
 
-pub struct Evaluator<'a, 'tcx, 'g> {
+pub(crate) struct Evaluator<'a, 'tcx, 'g> {
     pub work: crate::contracts::Work,
     tcx: TyCtxt<'tcx>,
     captures: crate::values::Captures<'tcx, 'g>,
@@ -1332,7 +1332,7 @@ impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
         Ok((value, support))
     }
 
-    pub fn established(
+    pub(crate) fn established(
         &mut self,
         condition: ConditionId<'g>,
         guards: &Sequence<'g, ConditionId<'g>>,

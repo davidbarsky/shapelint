@@ -337,7 +337,7 @@ impl TryFrom<Vec<(DefId, DefId)>> for Recursion {
 }
 
 impl Recursion {
-    pub fn merged_revision(
+    pub(crate) fn merged_revision(
         mut self,
         workers: impl IntoIterator<Item = Self>,
     ) -> Result<Option<Revision>, CapacityError> {

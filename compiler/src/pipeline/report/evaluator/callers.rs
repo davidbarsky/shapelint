@@ -10,6 +10,7 @@ use crate::contracts::graph::{
 use crate::pipeline::report::evaluator::{Answer, Evaluator, Query, schedule};
 
 impl<'a, 'tcx, 'g> Evaluator<'a, 'tcx, 'g> {
+    #[expect(dead_code, reason = "caller review rules consume contextual calls")]
     pub fn resolved_calls(
         &mut self,
         owners: &FxHashSet<DefId>,

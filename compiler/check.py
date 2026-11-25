@@ -313,10 +313,17 @@ def main():
                 crate_types.extend(arguments[index + 1].split(","))
             elif argument.startswith("--crate-type="):
                 crate_types.extend(argument.removeprefix("--crate-type=").split(","))
+        executable = "--test" in arguments or crate_types == ["bin"] or not crate_types
         importable = "--test" not in arguments and any(kind in {"lib", "rlib", "dylib", "proc-macro"} for kind in crate_types)
         command = [driver, "--format=" + os.environ["SHAPELINT_CARGO_FORMAT"]]
         if check_only:
             command.append("--cargo-check-only")
+        if executable and os.environ["SHAPELINT_CARGO_SCOPE"] == "target":
+            command.append("--analysis-scope=target")
+        if os.environ["SHAPELINT_CARGO_ANALYSIS_GAPS"] == "show":
+            command.append("--show-analysis-gaps")
+        if os.environ["SHAPELINT_CARGO_ENFORCEMENT"] == "deny":
+            command.append("--deny-invalid-states")
         summaries = Path(os.environ["SHAPELINT_CARGO_SUMMARIES"])
         for index, argument in enumerate(arguments):
             if argument == "--extern":
@@ -369,6 +376,10 @@ def main():
     )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("--deny-invalid-states", action="store_true")
+    parser.add_argument("--show-analysis-gaps", action="store_true",
+                        help="include unresolved preconditions and unsupported checks in the report")
+    parser.add_argument("--analysis-scope", choices=("library", "target"), default="library")
     parser.add_argument("--manifest-path", type=Path,
                         help="Cargo manifest to analyze (defaults to Shapelint's workspace)")
     options = parser.parse_args()
@@ -417,11 +428,21 @@ def main():
     )
 
     environment["SHAPELINT_CARGO_DRIVER"] = str(target / "release" / "shapelint-driver")
+    environment["SHAPELINT_CARGO_ENFORCEMENT"] = (
+        "deny" if options.deny_invalid_states else "report"
+    )
+    environment["SHAPELINT_CARGO_SCOPE"] = options.analysis_scope
+    environment["SHAPELINT_CARGO_ANALYSIS_GAPS"] = (
+        "show" if options.show_analysis_gaps else "hide"
+    )
     artifacts = compiler / "artifacts"
     invocation = artifacts / "runs" / uuid.uuid4().hex
     invocation.mkdir(parents=True)
     identity = configuration_identity(Path(environment["SHAPELINT_CARGO_DRIVER"]), script, {
         "format": environment["SHAPELINT_CARGO_FORMAT"], "color": color,
+        "scope": environment["SHAPELINT_CARGO_SCOPE"],
+        "enforcement": environment["SHAPELINT_CARGO_ENFORCEMENT"],
+        "analysis_gaps": environment["SHAPELINT_CARGO_ANALYSIS_GAPS"],
     })
     configuration = artifacts / "configurations" / identity
     configuration.mkdir(parents=True, exist_ok=True)

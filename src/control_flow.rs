@@ -1,5 +1,6 @@
 use crate::diagnostic::{Report, Sink};
-use crate::{Config, Finding, Related, SourceInput, Span, suppress};
+use crate::suppress;
+use crate::{Config, Finding, Related, SourceInput, Span};
 
 pub struct CompilerFinding {
     pub item: String,
@@ -24,10 +25,6 @@ impl std::fmt::Display for CheckOutcome {
 }
 
 pub enum CompilerEvidence {
-    Duplicate {
-        original: Related,
-    },
-
     ModuleCycle {
         members: Vec<String>,
         first_edge: String,
@@ -51,18 +48,55 @@ pub enum CompilerEvidence {
         decision: Related,
         other_calls: Vec<Related>,
     },
-
+    SerializationDetour {
+        origin: Related,
+    },
+    BorrowedClone {
+        uses: Vec<Related>,
+    },
+    DiscardedValidation {
+        condition: String,
+        origin: Related,
+    },
+    InvalidatedValidation {
+        condition: String,
+        mutation: Related,
+    },
+    RedundantCheck {
+        condition: String,
+        outcome: CheckOutcome,
+        established: String,
+        origin: Option<Related>,
+    },
     PayloadPredicate {
         method: String,
     },
     Fallback {
         method: String,
     },
-    SerializationDetour {
+    InvalidPrecondition {
+        operation: String,
+        requirement: String,
+        origin: Option<Related>,
+    },
+    UnencodedPrecondition {
+        owner: String,
+        consumer: String,
+        requirement: String,
+        witness: String,
+    },
+    UnprovenPrecondition {
+        explanation: String,
+        operation: String,
+        requirement: String,
+        origin: Option<Related>,
+    },
+    AnalysisIncomplete {
+        operation: String,
         origin: Related,
     },
-    BorrowedClone {
-        uses: Vec<Related>,
+    Duplicate {
+        original: Related,
     },
     InvalidVariant {
         observed: String,
@@ -71,6 +105,10 @@ pub enum CompilerEvidence {
     UnencodedInvariant {
         guard: String,
         required: String,
+    },
+    InconsistentConstruction {
+        assumption: String,
+        consumer: String,
     },
 }
 
@@ -148,6 +186,34 @@ pub fn lint_compiler(
                 let report = label_sites(report, std::slice::from_ref(decision));
                 ("forwarded-field", label_sites(report, other_calls))
             }
+            CompilerEvidence::SerializationDetour { origin } => ("serialization-detour", Report::new("a typed value is serialized and immediately reconstructed", *span, "deserializes back into the original type")
+                .related(origin.clone())
+                .note("The serialized value reaches this decoder without an intervening mutation or external operation.")
+                .help("Pass the typed value directly unless this conversion deliberately normalizes data or tests a codec contract.")),
+            CompilerEvidence::BorrowedClone { uses } => {
+                let mut report = Report::new("this clone is used only through shared borrows", *span, "the original value can supply these reads")
+                    .note("Recognized buffer or handle cloning feeds only modeled read operations; no automatic rewrite is applied.")
+                    .help("Borrow the original value instead of creating a temporary clone.");
+                for usage in uses { report = report.related(usage.clone()); }
+                ("clone-only-to-borrow", report)
+            }
+            CompilerEvidence::DiscardedValidation { condition, origin } => ("discarded-validation", Report::new("an earlier validator already establishes this recovery condition", *span, condition)
+                .related(origin.clone())
+                .help("Return a value that carries the validated invariant and consume it without revalidation.")),
+            CompilerEvidence::InvalidatedValidation { condition, mutation } => ("invalidated-validation", Report::new("a mutation invalidated the earlier validation", *span, format!("requires {condition} after the mutation"))
+                .related(mutation.clone())
+                .note("This identifies a lost guarantee, not proof that the operation fails.")
+                .help("Establish the requirement after the mutation, or move the mutation before validation.")),
+            CompilerEvidence::RedundantCheck { condition, outcome, established, origin } => {
+                let mut report = Report::new("incoming facts already decide this check", *span, format!("{condition}: {outcome}"))
+                    .note(established)
+                    .help("Keep validation at the boundary that owns the requirement; preserve any evaluation effects when simplifying.");
+                if let Some(origin) = origin {
+                    report = report.related(origin.clone())
+                        .note("This conclusion applies to this call. Other callers may still need the callee's check.");
+                }
+                ("redundant-check", report)
+            }
             CompilerEvidence::PayloadPredicate { method } => (
                 "option-result-predicate",
                 Report::new(
@@ -166,17 +232,29 @@ pub fn lint_compiler(
                 )
                 .help("Use the original Result here to preserve the error. If this boundary always supplies a fallback, carry the plain payload in its API."),
             ),
-            CompilerEvidence::SerializationDetour { origin } => ("serialization-detour", Report::new("a typed value is serialized and immediately reconstructed", *span, "deserializes back into the original type")
-                .related(origin.clone())
-                .note("The serialized value reaches this decoder without an intervening mutation or external operation.")
-                .help("Pass the typed value directly unless this conversion deliberately normalizes data or tests a codec contract.")),
-            CompilerEvidence::BorrowedClone { uses } => {
-                let mut report = Report::new("this clone is used only through shared borrows", *span, "the original value can supply these reads")
-                    .note("Recognized buffer or handle cloning feeds only modeled read operations; no automatic rewrite is applied.")
-                    .help("Borrow the original value instead of creating a temporary clone.");
-                for usage in uses { report = report.related(usage.clone()); }
-                ("clone-only-to-borrow", report)
-            }
+            CompilerEvidence::InvalidPrecondition { operation, requirement, origin: _ } => (
+                "invalid-state-use", Report::new(operation, *span, requirement)
+                    .help("Correct the construction or transition before this operation."),
+            ),
+            CompilerEvidence::UnencodedPrecondition { owner, consumer, requirement, witness } => (
+                "unencoded-precondition",
+                Report::new(format!("`{owner}` permits values that violate a consumer requirement"), *span, format!("requires {requirement}"))
+                    .note(format!("Representable counterexample: {witness}"))
+                    .note(format!("Required by {consumer}"))
+                    .note("This compares representable fields with the consumer requirement; it does not prove a reachable violating call.")
+                    .help("Own the relationship in a constructor with private fields or a narrower type."),
+            ),
+            CompilerEvidence::UnprovenPrecondition { explanation, operation, requirement, origin: _ } => (
+                "unproven-precondition", Report::new(operation, *span, requirement)
+                    .note(explanation)
+                    .note("Shapelint has not established that this operation fails."),
+            ),
+            CompilerEvidence::AnalysisIncomplete { operation, origin } => (
+                "analysis-incomplete",
+                Report::new("shapelint could not analyze this check", *span, operation)
+                    .related(origin.clone())
+                    .note("This reports a limitation of shapelint, not a defect in this code."),
+            ),
             CompilerEvidence::Duplicate { original } => (
                 "duplicate-control-flow",
                 Report::new("regions have matching typed control flow", *span, "appears to duplicate the implementation above")
@@ -197,7 +275,22 @@ pub fn lint_compiler(
                     .note("This is an inferred consumer assumption, not a declared domain invariant.")
                     .help("Put the payload in the state variant, or match the payload at the boundary."),
             ),
-
+            CompilerEvidence::InconsistentConstruction { assumption, consumer } => (
+                "inconsistent-state-construction",
+                Report::new("returned fields contradict an observed consumer assumption", *span, assumption)
+                    .note(format!("Consumer requiring this relationship: {consumer}"))
+                    .note("The relationship is inferred from that consumer; this is not a proof of a reachable domain bug.")
+                    .help("Unify construction and consumption around a type that encodes the relationship."),
+            ),
+        };
+        let origin = match evidence {
+            CompilerEvidence::InvalidPrecondition { origin, .. }
+            | CompilerEvidence::UnprovenPrecondition { origin, .. } => origin.as_ref(),
+            _ => None,
+        };
+        let report = match origin {
+            Some(origin) => report.related(origin.clone()),
+            None => report,
         };
         sink.emit(rule, *item_span, item, report);
     }

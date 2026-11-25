@@ -1,7 +1,7 @@
 # Coverage of the analysis engine
 
 Run `python3 coverage.py` from the repository root for the whole workspace, or
-`python3 coverage.py -p shapelint-driver --test cargo_check_only` for a focused
+`python3 coverage.py -p shapelint-driver --test requirement_contexts` for a focused
 suite. `-E` accepts a nextest filter expression. `--release` applies to both the
 instrumented test build and report generation.
 

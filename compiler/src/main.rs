@@ -12,11 +12,12 @@ extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_structures;
 
-use shapelint::{Style, render};
 mod module_cycles;
 
-use std::io::{BufWriter, IsTerminal, Write};
+use shapelint_driver::pipeline::AnalysisGaps;
+use shapelint_driver::{analysis, artifacts, callers, pipeline, protocols};
 
+use std::io::{BufWriter, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
@@ -30,7 +31,7 @@ use rustc_index::IndexVec;
 use rustc_interface::interface;
 use rustc_middle::mir::{Body, Promoted};
 use rustc_middle::ty::TyCtxt;
-use shapelint_driver::{analysis, artifacts, pipeline, protocols};
+use shapelint::{Style, render};
 
 struct Session {
     analyses: analysis::Session,
@@ -41,6 +42,11 @@ struct Session {
 // shapelint: allow(implicit-dependency) The rustc provider signature has no captured context.
 // This binary runs one compiler session; only lifetime-free evidence crosses the boundary.
 static SESSION: OnceLock<Session> = OnceLock::new();
+
+enum Enforcement {
+    Report,
+    DenyInvalidStates,
+}
 
 enum Output {
     Text(Style),
@@ -175,11 +181,14 @@ enum CargoOutput {
 }
 
 struct Driver {
-    cargo_output: CargoOutput,
-    diagnostics: Diagnostics,
+    enforcement: Enforcement,
+    analysis_gaps: AnalysisGaps,
+    status: ExitCode,
+    scope: callers::Scope,
     summary_inputs: artifacts::Inputs,
     summary_output: Option<std::path::PathBuf>,
-    status: ExitCode,
+    cargo_output: CargoOutput,
+    diagnostics: Diagnostics,
 }
 
 impl Callbacks for Driver {
@@ -211,10 +220,17 @@ impl Callbacks for Driver {
     }
 
     fn after_analysis<'tcx>(&mut self, _: &interface::Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
-        tcx.dcx().abort_if_errors();
         let session = SESSION
             .get()
             .expect("after_expansion installed the compiler session");
+        if let callers::Scope::Target = self.scope {
+            match tcx.crate_types() {
+                [rustc_structures::CrateType::Executable] => {}
+                _ => tcx
+                    .dcx()
+                    .fatal("--analysis-scope=target requires one executable target"),
+            }
+        }
         if let Some(_) = self.summary_output
             && !tcx.needs_metadata()
         {
@@ -242,59 +258,79 @@ impl Callbacks for Driver {
                 }
             }
         }
-        let metadata = if let (Some(_), _) | (_, CargoOutput::Check) =
-            (&self.summary_output, &self.cargo_output)
-        {
-            match rustc_metadata::fs::encode_and_write_metadata(tcx) {
-                Ok(metadata) => Some(metadata),
-                Err(_) => {
-                    self.status = ExitCode::FAILURE;
-                    return Compilation::Stop;
+        if let Some(error) = tcx.dcx().has_errors_or_delayed_bugs() {
+            error.raise_fatal();
+        }
+        // Metadata encoding establishes the crate hash and can request additional MIR.
+        let metadata = match (&self.summary_output, &self.cargo_output) {
+            (None, CargoOutput::Other) => None,
+            (Some(_), CargoOutput::Other) | (_, CargoOutput::Check) => {
+                match rustc_metadata::fs::encode_and_write_metadata(tcx) {
+                    Ok(metadata) => Some(metadata),
+                    Err(_) => {
+                        self.status = ExitCode::FAILURE;
+                        return Compilation::Stop;
+                    }
                 }
             }
-        } else {
-            None
         };
-        let local = session.analyses.finish(tcx, |graph, analyses| {
+        let summary_export = self.summary_output.as_ref().zip(metadata.as_ref());
+        session.analyses.finish(tcx, |graph, analyses| {
+            let collected = pipeline::Collected::from(analyses);
             let imported = match std::mem::take(&mut self.summary_inputs).import(tcx, graph) {
                 Ok(imported) => imported,
                 Err(error) => tcx.dcx().fatal(error.to_string()),
             };
-            let linked = pipeline::Summaries::link(&analyses, imported);
-            if let Err(error) = pipeline::evaluate_crate(tcx, graph, &linked) {
-                tcx.dcx().fatal(error.to_string());
-            }
-            if let Some((path, metadata)) = self.summary_output.as_ref().zip(metadata.as_ref()) {
-                if let Err(error) =
-                    artifacts::export(tcx, &linked, graph, path, metadata.full(), &session.sources)
-                {
-                    tcx.dcx().fatal(error.to_string());
+            let linked = collected.link(imported);
+            let analyzed = match linked.analyze(
+                tcx,
+                graph,
+                self.scope,
+                self.analysis_gaps,
+                &shapelint::Config::default(),
+                &session.sources,
+            ) {
+                Ok(analyzed) => analyzed,
+                Err(error) => tcx.dcx().fatal(error.to_string()),
+            };
+            let sources: &[pipeline::SourceFindings] = analyzed.as_ref();
+            if let Enforcement::DenyInvalidStates = self.enforcement {
+                for source in sources {
+                    for finding in &source.findings {
+                        match finding.rule {
+                            "invalid-state-use" | "invalid-variant-access" => {
+                                self.status = ExitCode::FAILURE;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
-            match pipeline::local_findings(analyses, tcx, &session.sources) {
-                Ok(local) => local,
-                Err(error) => tcx.dcx().fatal(error.to_string()),
+            self.diagnostics.workspace = Some(WorkspaceFacts::collect(tcx));
+            if self.status == ExitCode::SUCCESS {
+                if let Some((path, metadata)) = summary_export {
+                    if let Err(error) = artifacts::export(
+                        tcx,
+                        &analyzed,
+                        graph,
+                        path,
+                        metadata.full(),
+                        &session.sources,
+                    ) {
+                        tcx.dcx().fatal(error.to_string());
+                    }
+                }
             }
-        });
-        let sources = match pipeline::SourceFindings::collect(
-            tcx,
-            &session.sources,
-            &shapelint::Config::default(),
-            local,
-        ) {
-            Ok(sources) => sources,
-            Err(error) => tcx.dcx().fatal(error.to_string()),
-        };
-        self.diagnostics.workspace = Some(WorkspaceFacts::collect(tcx));
-        if let Err(error) = self.diagnostics.write(sources) {
-            tcx.dcx()
-                .fatal(format!("shapelint diagnostics output: {error}"));
-        }
-        if let CargoOutput::Check = self.cargo_output {
-            tcx.report_unused_features();
-            tcx.dcx().abort_if_errors();
-        }
-        Compilation::Stop
+            if let Err(error) = self.diagnostics.write(analyzed.into_iter()) {
+                tcx.dcx()
+                    .fatal(format!("shapelint diagnostics output: {error}"));
+            }
+            if let CargoOutput::Check = self.cargo_output {
+                tcx.report_unused_features();
+                tcx.dcx().abort_if_errors();
+            }
+            Compilation::Stop
+        })
     }
 }
 
@@ -441,58 +477,74 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut diagnostics = Diagnostics {
+    let diagnostics = Diagnostics {
         output: Output::Text(style),
         writer: Box::new(BufWriter::new(std::io::stdout())),
         workspace: None,
     };
-    let mut cargo_output = CargoOutput::Other;
     let mut arguments = std::env::args().peekable();
     let mut args: Vec<_> = arguments.next().into_iter().collect();
     if let Some(_) = arguments.next_if(|arg| arg == "module-cycles") {
         return module_cycles::run(args, arguments, diagnostics, style);
     }
+    let mut driver = Driver {
+        enforcement: Enforcement::Report,
+        analysis_gaps: AnalysisGaps::Hide,
+        status: ExitCode::SUCCESS,
+        scope: callers::Scope::Library,
+        summary_inputs: artifacts::Inputs::default(),
+        summary_output: None,
+        cargo_output: CargoOutput::Other,
+        diagnostics,
+    };
     let mut summary_paths = Vec::new();
-    let mut summary_output = None;
     while let Some(arg) = arguments.next() {
-        match arg.as_str() {
-            "--summary-input" | "--summary-output" => {
-                let Some(path) = arguments.next() else {
-                    eprintln!("shapelint-driver: {arg} requires a path");
-                    return ExitCode::FAILURE;
-                };
-                match arg.as_str() {
-                    "--summary-input" => summary_paths.push(path.into()),
-                    "--summary-output" => summary_output = Some(path.into()),
-                    _ => unreachable!("summary option dispatch"),
-                }
+        if arg == "--cargo-check-only" {
+            driver.cargo_output = CargoOutput::Check;
+        } else if arg == "--deny-invalid-states" {
+            driver.enforcement = Enforcement::DenyInvalidStates;
+        } else if arg == "--show-analysis-gaps" {
+            driver.analysis_gaps = AnalysisGaps::Show;
+        } else if arg == "--summary-input" || arg == "--summary-output" {
+            let Some(path) = arguments.next() else {
+                eprintln!("shapelint-driver: {arg} requires a path");
+                return ExitCode::FAILURE;
+            };
+            match arg.as_str() {
+                "--summary-input" => summary_paths.push(path.into()),
+                "--summary-output" => driver.summary_output = Some(path.into()),
+                _ => unreachable!("summary option dispatch"),
             }
-            "--cargo-check-only" => cargo_output = CargoOutput::Check,
-            _ => {
-                if let Err(error) =
-                    diagnostics.parse_or_forward(arg, &mut arguments, &mut args, style)
-                {
-                    eprintln!("shapelint-driver: {error}");
+        } else if arg == "--analysis-scope" || arg.starts_with("--analysis-scope=") {
+            let scope = match arg.strip_prefix("--analysis-scope=") {
+                Some(scope) => Some(scope.to_owned()),
+                None => arguments.next(),
+            };
+            driver.scope = match scope.as_deref() {
+                Some("library") => callers::Scope::Library,
+                Some("target") => callers::Scope::Target,
+                Some(_) | None => {
+                    eprintln!("shapelint-driver: --analysis-scope requires library or target");
                     return ExitCode::FAILURE;
                 }
-            }
+            };
+        } else if let Err(error) =
+            driver
+                .diagnostics
+                .parse_or_forward(arg, &mut arguments, &mut args, style)
+        {
+            eprintln!("shapelint-driver: {error}");
+            return ExitCode::FAILURE;
         }
     }
-    let mut summary_inputs = match artifacts::Inputs::try_from(summary_paths.as_slice()) {
+    driver.summary_inputs = match artifacts::Inputs::try_from(summary_paths.as_slice()) {
         Ok(inputs) => inputs,
         Err(error) => {
             eprintln!("shapelint-driver: {error}");
             return ExitCode::FAILURE;
         }
     };
-    args.extend(std::mem::take(&mut summary_inputs.externs));
-    let mut driver = Driver {
-        cargo_output,
-        diagnostics,
-        summary_inputs,
-        summary_output,
-        status: ExitCode::SUCCESS,
-    };
+    args.extend(std::mem::take(&mut driver.summary_inputs.externs));
     match compile(args, &mut driver) {
         ExitCode::SUCCESS => driver.status,
         status => status,

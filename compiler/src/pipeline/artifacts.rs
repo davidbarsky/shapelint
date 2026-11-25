@@ -885,7 +885,7 @@ impl<'g> Decoder<'_, 'g> {
 
 pub fn export<'g>(
     tcx: TyCtxt<'_>,
-    linked: &crate::pipeline::Summaries<'g>,
+    analyzed: &crate::pipeline::Analyzed<'g>,
     graph: &Graph<'g>,
     path: &Path,
     metadata: &[u8],
@@ -894,7 +894,7 @@ pub fn export<'g>(
     let crate::pipeline::Summaries {
         definitions: summaries,
         coverage,
-    } = linked;
+    } = analyzed.as_ref();
     let directory = match path.parent() {
         Some(directory) if !directory.as_os_str().is_empty() => directory,
         Some(_) | None => Path::new("."),

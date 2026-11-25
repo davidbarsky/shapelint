@@ -9,9 +9,10 @@ use graph::CapacityError;
 
 pub(crate) mod describe;
 pub mod graph;
-pub mod recursion;
 pub mod schedule;
 pub use graph::{operations, summaries};
+pub mod recursion;
+pub use crate::pipeline::report::{Analysis, findings};
 pub(crate) mod tree;
 pub use crate::values::{Identity, Invocation, Origin, Relocation};
 pub use tree::{Condition, Expr, Input, Serialized, Target};

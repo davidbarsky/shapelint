@@ -1,0 +1,448 @@
+[
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/forwarding.rs",
+    "line": 1,
+    "col": 4,
+    "item": "fn byte",
+    "item_span": {
+      "start": 0,
+      "end": 62
+    },
+    "message": "`byte` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 3,
+        "end": 7
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 48,
+          "end": 60
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "2 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:49a8722ba15e8406"
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/forwarding.rs",
+    "line": 5,
+    "col": 4,
+    "item": "fn relay",
+    "item_span": {
+      "start": 64,
+      "end": 133
+    },
+    "message": "`relay` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 67,
+        "end": 72
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 113,
+          "end": 131
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "3 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:13582a1dc0b73f08"
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/forwarding.rs",
+    "line": 9,
+    "col": 8,
+    "item": "fn unchecked",
+    "item_span": {
+      "start": 135,
+      "end": 213
+    },
+    "message": "`unchecked` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 142,
+        "end": 151
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 192,
+          "end": 211
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "0 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:fbddd50cf0bfe06c"
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/forwarding.rs",
+    "line": 21,
+    "col": 4,
+    "item": "fn reversed",
+    "item_span": {
+      "start": 372,
+      "end": 444
+    },
+    "message": "`reversed` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 375,
+        "end": 383
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 424,
+          "end": 442
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "2 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:a935b49e90024370"
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/forwarding.rs",
+    "line": 25,
+    "col": 8,
+    "item": "fn swapped",
+    "item_span": {
+      "start": 446,
+      "end": 525
+    },
+    "message": "`swapped` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 453,
+        "end": 460
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 501,
+          "end": 523
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "0 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:08400753dddaee85"
+  },
+  {
+    "rule": "redundant-check",
+    "kind": "lint",
+    "path": "src/guards.rs",
+    "line": 7,
+    "col": 14,
+    "item": "guards::established",
+    "item_span": {
+      "start": 105,
+      "end": 165
+    },
+    "message": "incoming facts already decide this check",
+    "primary": {
+      "span": {
+        "start": 210,
+        "end": 231
+      },
+      "message": "index < bytes.len(): always true"
+    },
+    "labels": [],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "Established before this check: index < bytes.len()."
+      },
+      {
+        "kind": "help",
+        "message": "Keep validation at the boundary that owns the requirement; preserve any evaluation effects when simplifying."
+      },
+      {
+        "kind": "note",
+        "message": "This conclusion applies to this call. Other callers may still need the callee's check."
+      }
+    ],
+    "fingerprint": "v2:3d2c6051a78cadd7",
+    "related": [
+      {
+        "input": {
+          "name": "src/guards.rs",
+          "text": "fn checked(bytes: &[u8], index: usize) -> u8 {\n    if index < bytes.len() { bytes[index] } else { 0 }\n}\n\npub fn established(bytes: &[u8], index: usize) -> Option<u8> {\n    if index < bytes.len() {\n        Some(checked(bytes, index))\n    } else {\n        None\n    }\n}\n\npub fn unknown(bytes: &[u8], index: usize) -> u8 {\n    checked(bytes, index)\n}\n"
+        },
+        "label": {
+          "span": {
+            "start": 54,
+            "end": 73
+          },
+          "message": "check originates in `guards::checked`"
+        }
+      }
+    ]
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/guards.rs",
+    "line": 13,
+    "col": 8,
+    "item": "fn unknown",
+    "item_span": {
+      "start": 268,
+      "end": 346
+    },
+    "message": "`unknown` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 275,
+        "end": 282
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 323,
+          "end": 344
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "0 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:a0b2dfe5f6f83849"
+  },
+  {
+    "rule": "invalidated-validation",
+    "kind": "lint",
+    "path": "src/mutation.rs",
+    "line": 4,
+    "col": 19,
+    "item": "mutation::invalidated",
+    "item_span": {
+      "start": 0,
+      "end": 67
+    },
+    "message": "a mutation invalidated the earlier validation",
+    "primary": {
+      "span": {
+        "start": 140,
+        "end": 147
+      },
+      "message": "requires index < (bytes).len() after the mutation"
+    },
+    "labels": [],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "This identifies a lost guarantee, not proof that the operation fails."
+      },
+      {
+        "kind": "help",
+        "message": "Establish the requirement after the mutation, or move the mutation before validation."
+      }
+    ],
+    "fingerprint": "v2:37b9b2c6dbab1454",
+    "related": [
+      {
+        "input": {
+          "name": "src/mutation.rs",
+          "text": "pub fn invalidated(bytes: &mut Vec<u8>, index: usize) -> Option<u8> {\n    if index < bytes.len() {\n        bytes.clear();\n        Some(bytes[index])\n    } else {\n        None\n    }\n}\n\npub fn rechecked(bytes: &mut Vec<u8>, index: usize) -> Option<u8> {\n    bytes.clear();\n    if index < bytes.len() {\n        Some(bytes[index])\n    } else {\n        None\n    }\n}\n"
+        },
+        "label": {
+          "span": {
+            "start": 107,
+            "end": 120
+          },
+          "message": "this mutation invalidates the earlier guarantee"
+        }
+      }
+    ]
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/recursion.rs",
+    "line": 13,
+    "col": 8,
+    "item": "fn established",
+    "item_span": {
+      "start": 163,
+      "end": 221
+    },
+    "message": "`established` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 170,
+        "end": 181
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 197,
+          "end": 219
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "0 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:9bf2a5907a42a5a4"
+  },
+  {
+    "rule": "shallow-helper",
+    "kind": "lint",
+    "path": "src/recursion.rs",
+    "line": 17,
+    "col": 8,
+    "item": "fn contradicted",
+    "item_span": {
+      "start": 223,
+      "end": 282
+    },
+    "message": "`contradicted` only wraps one expression",
+    "primary": {
+      "span": {
+        "start": 230,
+        "end": 242
+      },
+      "message": "one-expression helper"
+    },
+    "labels": [
+      {
+        "span": {
+          "start": 258,
+          "end": 280
+        },
+        "message": "the whole body"
+      }
+    ],
+    "footers": [
+      {
+        "kind": "note",
+        "message": "0 call site(s) in this file"
+      },
+      {
+        "kind": "help",
+        "message": "inline it at the call sites, unless the name states a domain concept or the function owns an invariant"
+      }
+    ],
+    "fingerprint": "v2:f3fc5ac8233b96a1"
+  },
+  {
+    "rule": "invalid-state-use",
+    "kind": "lint",
+    "path": "src/recursion.rs",
+    "line": 18,
+    "col": 5,
+    "item": "recursion::contradicted",
+    "item_span": {
+      "start": 223,
+      "end": 251
+    },
+    "message": "subtraction will underflow",
+    "primary": {
+      "span": {
+        "start": 258,
+        "end": 280
+      },
+      "message": "requires 1 >= 2"
+    },
+    "labels": [],
+    "footers": [
+      {
+        "kind": "help",
+        "message": "Correct the construction or transition before this operation."
+      }
+    ],
+    "fingerprint": "v2:c647e0bdf180e3d5"
+  }
+]

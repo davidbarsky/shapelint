@@ -86,9 +86,44 @@ pub const RULES: &[Rule] = &[
         summary: "a recognized clone only feeds shared read operations",
     },
     Rule {
+        id: "discarded-validation",
+        set: RuleSet::Lints,
+        summary: "a validator establishes a condition that downstream code checks again",
+    },
+    Rule {
         id: "test-only-production-path",
         set: RuleSet::Mechanical,
         summary: "test cfg or tests under src create a separate production path",
+    },
+    Rule {
+        id: "invalidated-validation",
+        set: RuleSet::Lints,
+        summary: "a mutation invalidates a consumer guarantee (compiler driver only)",
+    },
+    Rule {
+        id: "redundant-check",
+        set: RuleSet::Lints,
+        summary: "incoming facts already determine a source check's outcome (compiler driver only)",
+    },
+    Rule {
+        id: "invalid-state-use",
+        set: RuleSet::Lints,
+        summary: "known values violate a consumer precondition (compiler driver only)",
+    },
+    Rule {
+        id: "unencoded-precondition",
+        set: RuleSet::Lints,
+        summary: "public fields permit a consumer-precondition violation (compiler driver only)",
+    },
+    Rule {
+        id: "unproven-precondition",
+        set: RuleSet::AnalysisGaps,
+        summary: "an unresolved requirement, shown with --show-analysis-gaps (compiler driver only)",
+    },
+    Rule {
+        id: "analysis-incomplete",
+        set: RuleSet::AnalysisGaps,
+        summary: "an unsupported check, shown with --show-analysis-gaps (compiler driver only)",
     },
     Rule {
         id: "duplicate-control-flow",
@@ -104,6 +139,11 @@ pub const RULES: &[Rule] = &[
         id: "unencoded-state-invariant",
         set: RuleSet::Lints,
         summary: "a sibling-field guard does not prove a required variant (compiler driver only)",
+    },
+    Rule {
+        id: "inconsistent-state-construction",
+        set: RuleSet::Lints,
+        summary: "returned fields contradict an inferred consumer invariant (compiler driver only)",
     },
     Rule {
         id: "shallow-helper",
