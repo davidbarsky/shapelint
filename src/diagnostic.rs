@@ -57,7 +57,7 @@ pub struct Finding {
     pub footers: Vec<Footer>,
     /// Versioned stable identifier used for deduplication and hook state.
     pub fingerprint: String,
-    /// The enclosing item's text, when requested.
+    /// The enclosing item's text, when `Config::with_source` includes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }

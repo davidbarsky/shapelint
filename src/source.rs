@@ -23,13 +23,56 @@ pub struct SourceInput {
 /// Why a source could not be linted.
 #[derive(Debug, thiserror::Error)]
 pub enum LintError {
+    #[error("compiler source text is unavailable for {name}")]
+    Unavailable { name: String },
     #[error("invalid source span {span:?} in {name}")]
     InvalidSpan { name: String, span: crate::Span },
+    #[error("could not parse Rust source {name}")]
+    Parse { name: String },
     #[error(
         "{name} is {len} bytes; shapelint handles sources up to {} bytes",
         u32::MAX
     )]
     TooLarge { name: String, len: usize },
+    /// The parser recurses once per nesting level, so each source gets a thread whose stack
+    /// is sized from its token count; this is the OS refusing that thread.
+    #[error("could not start a parser thread with a {stack_bytes}-byte stack for {name}: {source}")]
+    NoStack {
+        name: String,
+        stack_bytes: usize,
+        source: std::io::Error,
+    },
+}
+
+impl TryFrom<&rustc_span::SourceFile> for SourceInput {
+    type Error = LintError;
+
+    fn try_from(file: &rustc_span::SourceFile) -> Result<Self, Self::Error> {
+        let name = file.name.prefer_local_unconditionally().to_string();
+        let external = file.external_src.read();
+        let text = match &file.src {
+            Some(text) => text.as_str(),
+            None => match external.get_source() {
+                Some(text) => text,
+                None => return Err(LintError::Unavailable { name }),
+            },
+        };
+        let mut original = String::new();
+        // Normalized positions follow removed CRLF pairs; position zero marks a leading BOM.
+        let mut positions = file.normalized_pos.iter().peekable();
+        if let Some(_) = positions.next_if(|position| position.pos.0 == 0) {
+            original.push('\u{feff}');
+        }
+        for (offset, character) in text.char_indices() {
+            if let Some(_) = positions
+                .next_if(|position| position.pos.0 as usize == offset + character.len_utf8())
+            {
+                original.push('\r');
+            }
+            original.push(character);
+        }
+        Self::try_new(name, original)
+    }
 }
 
 impl SourceInput {
@@ -133,6 +176,18 @@ impl SourceText {
         *lines
             .last()
             .expect("every source starts with line one at byte zero")
+    }
+
+    // Lexer offsets advance monotonically through this source.
+    pub(crate) fn line_cursor(&self) -> impl FnMut(u32) -> usize + '_ {
+        let mut starts = (1usize..).zip(self.starts.iter().copied()).peekable();
+        let mut current = 1;
+        move |offset| {
+            while let Some((number, _)) = starts.next_if(|&(_, start)| start <= offset) {
+                current = number;
+            }
+            current
+        }
     }
 }
 
