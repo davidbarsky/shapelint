@@ -1,0 +1,16 @@
+load("//build:defs.bzl", "rust_binary", "rust_library")
+load("//build/rules:image.bzl", "ersc_antithesis_image", "ersc_service_image")
+
+rust_library(
+    name = "ersc-cdc-worker",
+    mapped_srcs = {f: "code/cdc-worker/" + f for f in glob(
+        ["src/**/*.rs"],
+        exclude = ["src/bin/**"],
+    )} | {"//schema:capture[policy]": "schema/audit-policy.json"},
+    crate = "ersc_cdc_worker",
+    crate_root = "code/cdc-worker/src/lib.rs",
+    test_deps = [
+        "third-party//rust:hegeltest",
+    ],
+    visibility = ["PUBLIC"],
+)

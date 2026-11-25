@@ -35,6 +35,7 @@ fn importing_and_exporting_a_shared_diamond_keeps_one_node_per_level() {
     std::fs::write(&producer, "pub fn value()->usize {7}").expect("producer source");
     let produced = Command::new(env!("CARGO_BIN_EXE_shapelint-driver"))
         .args([
+            "--format=json",
             "--crate-name=dependency",
             "--crate-type=lib",
             "--edition=2024",
@@ -62,6 +63,7 @@ fn importing_and_exporting_a_shared_diamond_keeps_one_node_per_level() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_shapelint-driver"));
     command
         .args([
+            "--format=json",
             "--crate-name=consumer",
             "--crate-type=lib",
             "--edition=2024",

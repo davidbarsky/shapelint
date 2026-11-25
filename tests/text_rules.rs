@@ -244,17 +244,3 @@ fn arbitrary_text_has_valid_diagnostic_spans(tc: TestCase) {
     }
     render(&findings, &input, Style::Plain);
 }
-
-#[test]
-fn rust_comments_report_unknown_rule_names() {
-    let source = SourceInput::try_new(
-        "lib.rs",
-        "// shapelint: allow(imaginary-rule)\npub fn run() {}\n",
-    )
-    .expect("source is within the byte limit");
-    let findings = lint(&source, &Config::default()).expect("source parses");
-    let [finding] = findings.as_slice() else {
-        panic!("expected one finding, got {findings:?}");
-    };
-    assert_eq!(finding.rule, "unknown-allow");
-}

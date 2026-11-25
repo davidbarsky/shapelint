@@ -1,0 +1,17 @@
+[[topic]]
+name = "ersc.cdc.debezium.changes.public"
+partitions = 1
+
+[topic.config]
+"retention.ms" = "2592000000"
+
+[[topic]]
+name = "ersc.cdc.debezium.changes.audit"
+partitions = 1
+
+[topic.config]
+"retention.ms" = "2592000000"
+
+[[topic]]
+name = "ersc.cdc.debezium.changes.transaction"
+partitions = 1
