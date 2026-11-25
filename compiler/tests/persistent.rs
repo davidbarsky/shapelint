@@ -3,10 +3,10 @@ extern crate rustc_data_structures;
 extern crate rustc_driver;
 
 use rustc_data_structures::fx::FxHashMap;
+use shapelint_driver::contracts::graph::CapacityError;
 use shapelint_driver::persistent::{
     Composition, Difference, Differences, Hashed, Identical, Map, Neighbor, Ordered, with_maps,
 };
-use shapelint_driver::sequence::CapacityError;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::ptr;

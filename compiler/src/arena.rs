@@ -1,6 +1,7 @@
 //! Stable append-only storage and canonical interning for graph identities.
 
 use parking_lot::Mutex;
+use std::borrow::Borrow;
 use std::hash::{BuildHasher, Hash};
 use std::ops::Index;
 use std::sync::Arc;
@@ -52,6 +53,8 @@ pub(crate) struct Intern<I, T> {
     interned: Arc<Interned<I, T>>,
 }
 
+pub(crate) type Iter<'a, T> = std::iter::Map<boxcar::Iter<'a, T>, fn((usize, &'a T)) -> &'a T>;
+
 impl<I, T> Clone for Intern<I, T> {
     fn clone(&self) -> Self {
         Self {
@@ -81,9 +84,22 @@ impl<I: ArenaId, T> Intern<I, T> {
     pub(crate) fn len(&self) -> usize {
         self.interned.values.count()
     }
+
+    // shapelint: allow(shallow-helper) The backing append-only vector is private to the arena.
+    pub(crate) fn iter(&self) -> Iter<'_, T> {
+        self.interned.values.iter().map(|(_, value)| value)
+    }
 }
 
 impl<I: ArenaId, T: Eq + Hash> Intern<I, T> {
+    pub(crate) fn with_first(value: T) -> Self {
+        let arena = Self::new();
+        let hash = FxBuildHasher.hash_one(&value);
+        let id = I::from_index(0);
+        arena.append(&mut arena.interned.index.lock(), hash, id, value);
+        arena
+    }
+
     /// Returns the canonical identity for an equal value or appends it.
     #[shapelint_tool::arena(append)]
     pub(crate) fn intern<E: Copy>(&self, value: T, capacity_error: E) -> Result<I, E> {
@@ -121,6 +137,24 @@ impl<I: ArenaId, T: Eq + Hash> Intern<I, T> {
                 None => false,
             })
             .map(|(_, id)| *id)
+    }
+
+    /// Interns a borrowed value, allocating its owned form only on a miss.
+    pub(crate) fn intern_borrowed<Q: ?Sized, E: Copy>(
+        &self,
+        value: &Q,
+        capacity_error: E,
+    ) -> Result<I, E>
+    where
+        T: Borrow<Q> + for<'a> From<&'a Q>,
+        Q: Eq + Hash,
+    {
+        let hash = FxBuildHasher.hash_one(&value);
+        let mut index = self.interned.index.lock();
+        if let Some((_, id)) = index.find(hash, |(_, id)| self.get(*id).borrow() == value) {
+            return Ok(*id);
+        }
+        self.publish(&mut index, hash, T::from(value), capacity_error)
     }
 
     fn publish<E: Copy>(

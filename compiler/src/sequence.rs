@@ -11,7 +11,8 @@ use std::sync::Arc;
 use hashbrown::HashTable;
 use rustc_data_structures::fx::{FxHashMap, FxHasher};
 
-pub use crate::arena::CapacityError;
+use crate::arena::CapacityError;
+use crate::memo::Memo;
 
 const MULTIPLIER: u128 = 0x100000001b3;
 
@@ -98,6 +99,11 @@ struct Root<'g, T> {
 enum Kind<T> {
     Leaf(T),
     Branch(NodeId, NodeId),
+}
+#[derive(Clone, Copy)]
+enum End {
+    Front,
+    Back,
 }
 struct SequenceStore<'g, T> {
     nodes: boxcar::Vec<Node<T>>,
@@ -474,27 +480,50 @@ impl<'g, T: Clone + Eq + Hash> Sequences<'g, T> {
         self.store.splits.lock().insert(key, (left, right));
         Ok((left, right))
     }
-    fn pop_front(&mut self, root: NodeId) -> Result<(Option<NodeId>, NodeId), CapacityError> {
-        if let Some((Some(leaf), rest)) = self.store.splits.lock().get(&(root, 1)).copied() {
-            return Ok((rest, leaf));
+    fn pop_end(
+        &mut self,
+        root: NodeId,
+        end: End,
+    ) -> Result<(Option<NodeId>, NodeId), CapacityError> {
+        let cut = match end {
+            End::Front => 1,
+            End::Back => (1..self.store.nodes[root.0 as usize].len).len(),
+        };
+        if let Some(split) = self.store.splits.lock().get(&(root, cut)).copied() {
+            match (end, split) {
+                (End::Front, (Some(leaf), rest)) | (End::Back, (rest, Some(leaf))) => {
+                    return Ok((rest, leaf));
+                }
+                _ => {}
+            }
         }
         let mut node = root;
         let mut siblings = Vec::new();
         while let Kind::Branch(left, right) = self.store.nodes[node.0 as usize].kind {
-            siblings.push(right);
-            node = left;
+            match end {
+                End::Front => {
+                    siblings.push(right);
+                    node = left;
+                }
+                End::Back => {
+                    siblings.push(left);
+                    node = right;
+                }
+            }
         }
         let mut siblings = siblings.into_iter().rev();
         let rest = match siblings.next() {
             None => None,
-            Some(first) => {
-                Some(siblings.try_fold(first, |rest, sibling| self.join_nodes(rest, sibling))?)
-            }
+            Some(first) => Some(siblings.try_fold(first, |rest, sibling| match end {
+                End::Front => self.join_nodes(rest, sibling),
+                End::Back => self.join_nodes(sibling, rest),
+            })?),
         };
-        self.store
-            .splits
-            .lock()
-            .insert((root, 1), (Some(node), rest));
+        let split = match end {
+            End::Front => (Some(node), rest),
+            End::Back => (rest, Some(node)),
+        };
+        self.store.splits.lock().insert((root, cut), split);
         Ok((rest, node))
     }
     fn sequence(&mut self, root: Option<NodeId>) -> Result<Sequence<'g, T>, CapacityError> {
@@ -659,7 +688,7 @@ impl<'g, T: Clone + Eq + Hash> Sequences<'g, T> {
         let (left, Some(tail)) = self.split_node(root, index)? else {
             return Ok(None);
         };
-        let (right, _) = self.pop_front(tail)?;
+        let (right, _) = self.pop_end(tail, End::Front)?;
         let value = self.leaf(value)?;
         let root = match left {
             Some(left) => self.join_nodes(left, value)?,
@@ -682,7 +711,7 @@ impl<'g, T: Clone + Eq + Hash> Sequences<'g, T> {
         let (left, Some(tail)) = self.split_node(root, index)? else {
             return Ok(None);
         };
-        let (right, first) = self.pop_front(tail)?;
+        let (right, first) = self.pop_end(tail, End::Front)?;
         let value = self.first_value(first).clone();
         let root = match (left, right) {
             (Some(left), Some(right)) => Some(self.join_nodes(left, right)?),
@@ -1071,6 +1100,57 @@ impl<'g, T: Clone, U: Clone> Fold<'g, T, U> {
     }
 }
 
+pub(crate) enum Parts<'g, T> {
+    Empty,
+    Leaf(T),
+    Branch(Sequence<'g, T>, Sequence<'g, T>),
+}
+impl<'g, T: Clone + Eq + Hash> Sequences<'g, T> {
+    pub(crate) fn parts(
+        &mut self,
+        sequence: Sequence<'g, T>,
+    ) -> Result<Parts<'g, T>, CapacityError> {
+        let Some(root) = self.node(sequence) else {
+            return Ok(Parts::Empty);
+        };
+        match &self.store.nodes[root.0 as usize].kind {
+            Kind::Leaf(value) => Ok(Parts::Leaf(value.clone())),
+            Kind::Branch(left, right) => {
+                let (left, right) = (*left, *right);
+                let left = self.register(left)?.into();
+                let right = self.register(right)?.into();
+                Ok(Parts::Branch(left, right))
+            }
+        }
+    }
+    /// Removes the final occurrence while retaining the original sequence.
+    pub fn prefix(
+        &mut self,
+        sequence: Sequence<'g, T>,
+    ) -> Result<Option<(Sequence<'g, T>, T)>, CapacityError> {
+        let Some(id) = sequence.root else {
+            return Ok(None);
+        };
+        let root_index = usize::from(id);
+        let cached = self.store.roots[root_index].prefix.lock().as_ref().copied();
+        let (prefix, tail) = match cached {
+            Some(cached) => cached,
+            None => {
+                let root = self.store.roots[root_index].node;
+                let (prefix, tail) = self.pop_end(root, End::Back)?;
+                let prefix = self.sequence(prefix)?;
+                *self.store.roots[root_index]
+                    .prefix
+                    .lock()
+                    .get_or_insert((prefix, tail))
+            }
+        };
+        let value = self.first_value(tail).clone();
+        Ok(Some((prefix, value)))
+    }
+}
+
+/// Reuses each mapped fragment for one fixed operation.
 pub struct Mapper<'g, 'h, T, U, F> {
     operation: F,
     completed: FxHashMap<NodeId, NodeId>,
@@ -1121,6 +1201,66 @@ impl<'g, 'h, T, U: Clone + Eq + Hash, F: FnMut(&T) -> U> Mapper<'g, 'h, T, U, F>
     }
 }
 
+pub(crate) struct Remap<'g, T, C> {
+    completed: Memo<(NodeId, C), NodeId>,
+    marker: PhantomData<fn(&'g (), T) -> (&'g (), T)>,
+}
+impl<T, C: Eq + Hash> Default for Remap<'_, T, C> {
+    fn default() -> Self {
+        Self {
+            completed: Memo::default(),
+            marker: PhantomData,
+        }
+    }
+}
+impl<'g, T, C> Remap<'g, T, C> {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            completed: self.completed.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+impl<'g, T: Clone + Eq + Hash, C: Copy + Eq + Hash> Remap<'g, T, C> {
+    pub fn apply<Context, E: From<CapacityError>>(
+        &mut self,
+        context: &mut Context,
+        arena: impl for<'a> Fn(&'a mut Context) -> &'a mut Sequences<'g, T>,
+        sequence: Sequence<'g, T>,
+        context_id: C,
+        mut operation: impl FnMut(&mut Context, &T) -> Result<T, E>,
+    ) -> Result<Sequence<'g, T>, E> {
+        let Some(root) = arena(context).node(sequence) else {
+            return Ok(Sequence::EMPTY);
+        };
+        let mut path = Postorder(Vec::new());
+        let mut visit = Visit::Node(root);
+        loop {
+            visit = match visit {
+                Visit::Node(id) => match self.completed.get(&(id, context_id)) {
+                    Some(mapped) => path.complete(mapped),
+                    None => match arena(context).store.nodes[id.0 as usize].kind.clone() {
+                        Kind::Leaf(value) => {
+                            let value = operation(context, &value)?;
+                            let mapped = arena(context).leaf(value)?;
+                            self.completed.insert((id, context_id), mapped);
+                            path.complete(mapped)
+                        }
+                        Kind::Branch(left, right) => path.descend(id, left, right),
+                    },
+                },
+                Visit::Join(id, left, right) => {
+                    let mapped = arena(context).branch(left, right)?;
+                    self.completed.insert((id, context_id), mapped);
+                    path.complete(mapped)
+                }
+                Visit::Done(mapped) => return Ok(arena(context).register(mapped)?.into()),
+            };
+        }
+    }
+}
+
+/// Retains an exact left-to-right fold across shared fragments and input states.
 pub struct Scan<'g, T, S, K, F> {
     completed: FxHashMap<(NodeId, S, K), S>,
     operation: F,
@@ -1375,5 +1515,30 @@ impl<'g, T: Clone + Eq + Hash, C: Clone + Eq + Hash> TransformCache<'g, T, C> {
             |context, part| summarize(context.1, context.0, part),
         )?;
         Ok(result)
+    }
+}
+impl<'g, T: Clone + Eq + Hash, U: Clone> Fold<'g, T, U> {
+    pub(crate) fn edit<C: Clone + Eq + Hash, S, E: From<CapacityError>>(
+        &mut self,
+        arena: &mut Sequences<'g, T>,
+        sequence: Sequence<'g, T>,
+        cache: &mut TransformCache<'g, T, C>,
+        key: C,
+        state: &mut S,
+        summarize: impl FnMut(&mut S, &mut Sequences<'g, T>, Part<'_, T, U>) -> Result<U, E>,
+        select: impl FnMut(&mut S, &mut Sequences<'g, T>, &U, &C) -> Result<Selection, E>,
+        operation: impl FnMut(&mut S, &mut Sequences<'g, T>, &T, &C) -> Result<Option<T>, E>,
+    ) -> Result<Sequence<'g, T>, E> {
+        cache.apply(
+            arena,
+            sequence,
+            self,
+            key,
+            state,
+            summarize,
+            |_, _, _, context| Ok(context.clone()),
+            select,
+            operation,
+        )
     }
 }

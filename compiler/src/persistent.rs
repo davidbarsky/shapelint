@@ -255,6 +255,7 @@ impl<'g, K, V, R> Maps<'g, K, V, R> {
             brand: PhantomData,
         }
     }
+    /// Shares canonical nodes, payloads, and pure operation results with this owner.
     pub fn share(&self) -> Self {
         Self {
             nodes: self.nodes.clone(),

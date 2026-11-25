@@ -546,6 +546,9 @@ dependencies = [
  "hashbrown",
  "hegeltest",
  "parking_lot 0.13.0",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
