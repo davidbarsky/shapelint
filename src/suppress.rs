@@ -16,6 +16,7 @@ pub(crate) struct Allow {
 /// Indexes the allow comments in one source file by line and rule.
 #[derive(Default)]
 pub struct Suppressions {
+    allows: Vec<Allow>,
     by_rule: FxHashMap<String, LineIntervals>,
     all: LineIntervals,
 }
@@ -71,6 +72,12 @@ impl Suppressions {
         };
         [line, item_line].into_iter().find_map(for_line)
     }
+
+    pub(crate) fn unknown(&self) -> impl Iterator<Item = &Allow> {
+        self.allows.iter().filter(|allow| {
+            allow.name != "all" && !crate::RULES.iter().any(|rule| rule.id == allow.name)
+        })
+    }
 }
 
 impl From<Vec<Allow>> for Suppressions {
@@ -88,13 +95,17 @@ impl From<Vec<Allow>> for Suppressions {
         for intervals in by_rule.values_mut() {
             intervals.finish();
         }
-        Self { by_rule, all }
+        Self {
+            allows,
+            by_rule,
+            all,
+        }
     }
 }
 
 struct CommentBlock {
-    allows: Vec<Allow>,
     end: usize,
+    allows: Vec<Allow>,
 }
 
 impl CommentBlock {

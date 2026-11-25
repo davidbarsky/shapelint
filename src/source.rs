@@ -144,6 +144,12 @@ pub(crate) struct SourceText {
     starts: Vec<u32>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Position {
+    pub line: usize,
+    pub col: usize,
+}
+
 impl SourceText {
     fn new(text: String) -> Self {
         let starts = std::iter::once(0)
@@ -169,6 +175,15 @@ impl SourceText {
             .get(last)
             .map_or(self.text.len(), |&byte| byte as usize);
         (first, offset..end)
+    }
+
+    pub(crate) fn line_col(&self, offset: u32) -> Position {
+        let before = self.starts.partition_point(|&start| start <= offset);
+        let start = self.start_before(before);
+        Position {
+            line: before,
+            col: (start as usize..=offset as usize).count(),
+        }
     }
 
     fn start_before(&self, end: usize) -> u32 {

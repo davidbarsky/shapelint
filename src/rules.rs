@@ -54,4 +54,20 @@ impl Rule {
     }
 }
 
-pub const RULES: &[Rule] = &[];
+pub const RULES: &[Rule] = &[
+    Rule {
+        id: "duration-comment",
+        set: RuleSet::Mechanical,
+        summary: "large duration literal in config without a human-unit comment (C06)",
+    },
+    Rule {
+        id: "mapped-srcs",
+        set: RuleSet::Mechanical,
+        summary: "mapped_srcs in a Buck/Bazel file (C07)",
+    },
+    Rule {
+        id: "unknown-allow",
+        set: RuleSet::Mechanical,
+        summary: "`shapelint: allow(...)` names a rule that doesn't exist",
+    },
+];

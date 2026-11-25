@@ -54,3 +54,44 @@ pub struct SourceFindings {
     pub input: shapelint::SourceInput,
     pub findings: Vec<shapelint::Finding>,
 }
+
+impl SourceFindings {
+    pub fn collect(
+        tcx: rustc_middle::ty::TyCtxt<'_>,
+        source_inputs: &crate::diagnostics::Sources,
+        config: &shapelint::Config,
+    ) -> Result<Vec<Self>, shapelint::LintError> {
+        let map = tcx.sess.source_map();
+        let mut spans: Vec<_> = tcx
+            .iter_local_def_id()
+            .map(|def| tcx.def_span(def))
+            .collect();
+        tcx.hir_for_each_module(|module| {
+            spans.push(tcx.hir_get_module(module).0.spans.inner_span);
+        });
+        let mut files = rustc_data_structures::fx::FxIndexMap::default();
+        for span in spans {
+            if span.is_dummy() {
+                continue;
+            }
+            let file = map.lookup_source_file(span.lo());
+            if file.is_imported() {
+                continue;
+            }
+            let name = file.name.prefer_local_unconditionally().to_string();
+            if let Some(shapelint::Language::Rust) = shapelint::Language::of(&name) {
+                files.entry(file.start_pos).or_insert(file);
+            }
+        }
+        let inputs = files
+            .into_values()
+            .map(|file| source_inputs.input(file.as_ref()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let findings = shapelint::lint_sources(&inputs, config)?;
+        Ok(inputs
+            .into_iter()
+            .zip(findings)
+            .map(|(input, findings)| Self { input, findings })
+            .collect())
+    }
+}

@@ -169,7 +169,15 @@ impl Callbacks for Driver {
                 }
             }
         });
-        if let Err(error) = self.diagnostics.write([]) {
+        let sources = match pipeline::SourceFindings::collect(
+            tcx,
+            &session.sources,
+            &shapelint::Config::default(),
+        ) {
+            Ok(sources) => sources,
+            Err(error) => tcx.dcx().fatal(error.to_string()),
+        };
+        if let Err(error) = self.diagnostics.write(sources) {
             tcx.dcx()
                 .fatal(format!("shapelint diagnostics output: {error}"));
         }

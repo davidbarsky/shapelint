@@ -19,6 +19,7 @@ mod rust_syntax;
 mod source;
 mod suggest;
 mod suppress;
+mod text_rules;
 mod text_syntax;
 
 pub use config::{
@@ -70,7 +71,7 @@ pub fn lint(input: &SourceInput, config: &Config) -> Result<Vec<Finding>, LintEr
 
 pub fn lint_sources(
     inputs: &[SourceInput],
-    _config: &Config,
+    config: &Config,
 ) -> Result<Vec<Vec<Finding>>, LintError> {
     let threads = std::thread::available_parallelism()
         .map_or(1, usize::from)
@@ -80,7 +81,12 @@ pub fn lint_sources(
         let handles: Vec<_> = inputs
             .chunks(chunk_size)
             .map(|chunk| {
-                scope.spawn(move || chunk.iter().map(|input| analyze(input)).collect::<Vec<_>>())
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|input| analyze(input, config))
+                        .collect::<Vec<_>>()
+                })
             })
             .collect();
         handles
@@ -94,12 +100,12 @@ pub fn lint_sources(
     Ok(analyses)
 }
 
-fn analyze(input: &SourceInput) -> Result<Vec<Finding>, LintError> {
+fn analyze(input: &SourceInput, config: &Config) -> Result<Vec<Finding>, LintError> {
     let Some(language) = Language::of(&input.name) else {
         return Ok(Vec::new());
     };
     if language != Language::Rust {
-        return lint_here(input, language);
+        return lint_here(input, config, language);
     }
     // The lexer is iterative, so counting tokens is safe at any depth.
     let tokens = rustc_lexer::tokenize(input.as_ref(), rustc_lexer::FrontmatterAllowed::No).count();
@@ -108,7 +114,7 @@ fn analyze(input: &SourceInput) -> Result<Vec<Finding>, LintError> {
         let worker = std::thread::Builder::new()
             .name("shapelint-parse".into())
             .stack_size(stack_bytes)
-            .spawn_scoped(scope, || lint_here(input, language))
+            .spawn_scoped(scope, || lint_here(input, config, language))
             .map_err(|source| LintError::NoStack {
                 name: input.name.to_string(),
                 stack_bytes,
@@ -122,13 +128,29 @@ fn analyze(input: &SourceInput) -> Result<Vec<Finding>, LintError> {
     })
 }
 
-fn lint_here(input: &SourceInput, language: Language) -> Result<Vec<Finding>, LintError> {
+fn lint_here(
+    input: &SourceInput,
+    config: &Config,
+    language: Language,
+) -> Result<Vec<Finding>, LintError> {
     match language {
-        Language::Rust => rust_syntax::parse(input, || rust_suppressions(input))??,
+        Language::Rust => rust_syntax::parse(input, || {
+            let suppressions = rust_suppressions(input)?;
+            let mut sink = diagnostic::Sink::new(input, config, &suppressions);
+            sink.report_unknown();
+            sink.finish()
+        })?,
         Language::Toml | Language::Starlark => {
             let tokens = text_syntax::lex(input.as_ref(), language);
-            suppress::scan_hash_comments(input, &tokens)?
+            let suppressions = suppress::scan_hash_comments(input, &tokens)?;
+            let mut sink = diagnostic::Sink::new(input, config, &suppressions);
+            match language {
+                Language::Toml => text_rules::lint_toml(&mut sink, &tokens, input, config),
+                Language::Starlark => text_rules::lint_starlark(&mut sink, &tokens, input.as_ref()),
+                Language::Rust => unreachable!(),
+            }
+            sink.report_unknown();
+            sink.finish()
         }
-    };
-    Ok(Vec::new())
+    }
 }
