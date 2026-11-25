@@ -30,3 +30,5 @@ pub mod pipeline;
 pub mod sequence;
 pub mod values;
 pub use pipeline::artifacts;
+pub mod hir_rules;
+pub use diagnostics::Located;

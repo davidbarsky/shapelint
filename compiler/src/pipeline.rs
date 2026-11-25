@@ -80,18 +80,58 @@ impl SourceFindings {
             }
             let name = file.name.prefer_local_unconditionally().to_string();
             if let Some(shapelint::Language::Rust) = shapelint::Language::of(&name) {
-                files.entry(file.start_pos).or_insert(file);
+                files.entry(file.start_pos).or_insert((file, Vec::new()));
             }
         }
-        let inputs = files
-            .into_values()
-            .map(|file| source_inputs.input(file.as_ref()))
-            .collect::<Result<Vec<_>, _>>()?;
+        for crate::Located {
+            def,
+            item_span,
+            span,
+            evidence,
+        } in crate::hir_rules::findings(tcx)
+        {
+            let Some(span) = crate::diagnostics::source_span(tcx, def.to_def_id(), span) else {
+                continue;
+            };
+            let item_span = item_span.source_callsite();
+            let file = map.lookup_source_file(span.lo());
+            if file.is_imported() {
+                continue;
+            }
+            let item_span = match (file.contains(item_span.lo()), file.contains(item_span.hi())) {
+                (true, true) => item_span,
+                _ => span,
+            };
+            let finding = shapelint::CompilerFinding {
+                item: crate::diagnostics::item(tcx, def.to_def_id()),
+                item_span: shapelint::Span {
+                    start: file.original_relative_byte_pos(item_span.lo()).0,
+                    end: file.original_relative_byte_pos(item_span.hi()).0,
+                },
+                span: shapelint::Span {
+                    start: file.original_relative_byte_pos(span.lo()).0,
+                    end: file.original_relative_byte_pos(span.hi()).0,
+                },
+                evidence,
+            };
+            let (_, findings) = files
+                .entry(file.start_pos)
+                .or_insert_with(|| (file, Vec::new()));
+            findings.push(finding);
+        }
+        let mut inputs = Vec::new();
+        let mut evidence = Vec::new();
+        for (file, findings) in files.into_values() {
+            inputs.push(source_inputs.input(file.as_ref())?);
+            evidence.push(findings);
+        }
         let findings = shapelint::lint_sources(&inputs, config)?;
-        Ok(inputs
-            .into_iter()
-            .zip(findings)
-            .map(|(input, findings)| Self { input, findings })
-            .collect())
+        let mut sources = Vec::with_capacity(inputs.len());
+        for ((input, evidence), mut findings) in inputs.into_iter().zip(evidence).zip(findings) {
+            findings.extend(shapelint::lint_compiler(&input, config, &evidence)?);
+            findings.sort_by_key(|finding| finding.primary.span);
+            sources.push(Self { input, findings });
+        }
+        Ok(sources)
     }
 }

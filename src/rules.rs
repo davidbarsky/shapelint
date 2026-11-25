@@ -71,6 +71,11 @@ pub const RULES: &[Rule] = &[
         summary: "fallible check that returns Ok(()) or its own inputs: parse, don't validate (C05, C16, C17, C25, C26)",
     },
     Rule {
+        id: "json-in-domain",
+        set: RuleSet::Lints,
+        summary: "generic JSON imported, stored, returned, or constructed outside a boundary",
+    },
+    Rule {
         id: "config-bag",
         set: RuleSet::Lints,
         summary: "deserialized config re-parsed at use time, or a flattened String map (C03, C04)",
@@ -139,6 +144,36 @@ pub const RULES: &[Rule] = &[
         id: "super-path",
         set: RuleSet::Mechanical,
         summary: "super outside use super::* in tests: use crate-qualified paths",
+    },
+    Rule {
+        id: "matches-macro",
+        set: RuleSet::Mechanical,
+        summary: "matches! hides variant handling: use explicit patterns",
+    },
+    Rule {
+        id: "option-result-predicate",
+        set: RuleSet::Lints,
+        summary: "a branch tests a variant and immediately extracts it from the same local (compiler driver only)",
+    },
+    Rule {
+        id: "boolean-state",
+        set: RuleSet::Lints,
+        summary: "domain state expressed as boolean fields, parameters, or returns",
+    },
+    Rule {
+        id: "error-erasure",
+        set: RuleSet::Lints,
+        summary: "fallible result discarded instead of preserving the error",
+    },
+    Rule {
+        id: "silent-default",
+        set: RuleSet::Lints,
+        summary: "an error is replaced by a successful fallback of the same Result type (compiler driver only)",
+    },
+    Rule {
+        id: "implicit-dependency",
+        set: RuleSet::Lints,
+        summary: "thread/task-local or global mutable context hides a dependency",
     },
     Rule {
         id: "redundant-comment",

@@ -9,11 +9,18 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_span::symbol::Ident;
 
 use crate::diagnostic::{Report, Sink};
+use crate::expression_rules::JsonContext;
 use crate::rust_syntax::{RustFile, is_test_path, test_attributes};
 use crate::suggest::Code;
 use crate::{Config, SourceInput, Span};
 
-pub(crate) fn lint(sink: &mut Sink, file: &RustFile<'_>, source: &SourceInput, config: &Config) {
+pub(crate) fn lint(
+    sink: &mut Sink,
+    file: &RustFile<'_>,
+    source: &SourceInput,
+    config: &Config,
+    json_boundary: JsonContext,
+) {
     let index = Collector::collect(file);
     let mut uses: FxHashMap<String, Uses> = FxHashMap::default();
     let callees: FxHashSet<_> = index
@@ -95,11 +102,29 @@ pub(crate) fn lint(sink: &mut Sink, file: &RustFile<'_>, source: &SourceInput, c
             },
         );
     }
+    let json_imported = index
+        .imports
+        .iter()
+        .find(|(item, _)| {
+            let text = file.text(item.span);
+            text.contains("serde_json")
+                && match (contains_word(text, "Value"), contains_word(text, "Map")) {
+                    (Some(_), _) | (_, Some(_)) => true,
+                    (None, None) => false,
+                }
+        })
+        .map(|_| ());
+    let json_imported = match json_imported {
+        Some(_) => JsonImports::Present,
+        None => JsonImports::Absent,
+    };
     let cx = Context {
         file,
         index: &index,
         uses,
         attrs,
+        json_imported,
+        json_boundary,
         source,
         config,
         owners,
@@ -410,6 +435,8 @@ struct Context<'a, 'b> {
     index: &'a Index<'b>,
     uses: FxHashMap<String, Uses>,
     attrs: String,
+    json_imported: JsonImports,
+    json_boundary: JsonContext,
     source: &'a SourceInput,
     config: &'a Config,
     owners: FxHashMap<SpanKey, EnclosingItem>,
@@ -420,6 +447,19 @@ struct EnclosingItem {
     name: String,
 }
 impl<'a> Context<'_, 'a> {
+    fn domain_json_type(&self, text: &str) -> Option<()> {
+        let JsonContext::Domain = self.json_boundary else {
+            return None;
+        };
+        if text.contains("serde_json::Value") || text.contains("serde_json::Map") {
+            return Some(());
+        }
+        match self.json_imported {
+            JsonImports::Present => contains_word(text, "Value").map(|_| ()),
+            JsonImports::Absent => None,
+        }
+    }
+
     // shapelint: allow(shallow-helper) The owner-index lookup is the single source-ownership boundary.
     fn expressions_for(&self, owner: rustc_span::Span) -> &[&'a ast::Expr] {
         self.index
@@ -505,6 +545,24 @@ fn short(text: &str, max: usize) -> String {
         format!("{}…", text.chars().take(max).collect::<String>())
     }
 }
+fn contains_word(text: &str, word: &str) -> Option<usize> {
+    text.match_indices(word).find_map(|(at, _)| {
+        let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
+        match (
+            text[..at].chars().next_back(),
+            text[at + word.len()..].chars().next(),
+        ) {
+            (Some(before), _) if identifier(before) => None,
+            (_, Some(after)) if identifier(after) => None,
+            _ => Some(at),
+        }
+    })
+}
+#[derive(Clone, Copy)]
+enum JsonImports {
+    Present,
+    Absent,
+}
 fn fn_path(file: &RustFile<'_>, function: &Function<'_>) -> String {
     let name = function.node.ident.name;
     match (function.owner, function.self_ty) {
@@ -534,6 +592,21 @@ fn check_use(
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    if text.contains("serde_json")
+        && let Some(_) = ["Value", "Map"]
+            .iter()
+            .find_map(|word| contains_word(&text, word))
+        && cx.json_boundary == JsonContext::Domain
+    {
+        let report = Report::new("module imports generic JSON types but is not a JSON boundary", file.item_span(item.span, &item.attrs), "generic JSON enters domain code here")
+            .help("parse known structure into types and keep `Value`/`Map` at the wire edge, or list this path under `json-boundary` in `.shapelint`");
+        sink.emit(
+            "json-in-domain",
+            file.item_span(item.span, &item.attrs),
+            "use serde_json",
+            report,
+        );
+    }
     let private = match item.vis.kind {
         ast::VisibilityKind::Inherited => Some(()),
         _ => None,
@@ -710,6 +783,34 @@ fn check_fn(sink: &mut Sink, cx: &Context<'_, '_>, function: &Function<'_>) {
         }
     }
     if let Some(ret_ty) = ret_ty {
+        if let Some(()) = cx.domain_json_type(&ret) {
+            let json_macros = cx
+                .expressions_for(function.span)
+                .iter()
+                .filter(|expr| match &node.body {
+                    Some(body) => body.span.contains(expr.span),
+                    None => false,
+                })
+                .filter(|expr| match &expr.kind {
+                    ast::ExprKind::MacCall(mac) => file.text(mac.path.span) == "json",
+                    _ => false,
+                })
+                .count();
+            let mut report = Report::new(
+                format!(
+                    "{} returns generic JSON ({})",
+                    Code(&path),
+                    Code(short(&ret, 50))
+                ),
+                file.span(ret_ty.span),
+                "generic JSON returned here",
+            )
+            .help("return a struct or enum and serialize it at the edge");
+            if json_macros >= 2 {
+                report = report.note(format!("its body builds {json_macros} `json!` objects"));
+            }
+            sink.emit("json-in-domain", item.span, item.name.clone(), report);
+        }
         let widest = returns.widest_tuple;
         if let None = trait_impl
             && widest >= cx.config.t.tuple_return_min_width
@@ -1038,6 +1139,24 @@ fn check_struct(
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        if let Some(()) = cx.domain_json_type(&ty) {
+            let report = Report::new(
+                format!(
+                    "{} stores generic JSON ({})",
+                    Code(format!("{name}.{fname}")),
+                    Code(short(&ty, 40))
+                ),
+                file.span(field.ty.span),
+                "generic JSON stored here",
+            )
+            .help("type the known fields; if an open map remains, make its values typed");
+            sink.emit(
+                "json-in-domain",
+                item.span,
+                format!("{}.{fname}", item.name),
+                report,
+            );
+        }
         if let Some(_) = deserialize
             && let Some(_) = field
                 .attrs

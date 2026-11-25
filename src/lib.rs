@@ -16,6 +16,7 @@ extern crate rustc_span;
 mod config;
 mod control_flow;
 mod diagnostic;
+mod expression_rules;
 mod rules;
 mod rust_rules;
 mod rust_syntax;
@@ -29,7 +30,7 @@ mod text_syntax;
 pub use config::{
     CONFIG_KEYS, Config, ConfigParse, ConfigWarning, PathPattern, SourceMode, Thresholds,
 };
-pub use control_flow::{CheckOutcome, CompilerEvidence};
+pub use control_flow::{CheckOutcome, CompilerEvidence, CompilerFinding, lint_compiler};
 pub use diagnostic::{Finding, Footer, Label, Related, Style, render};
 pub use rules::{Kind, RULES, Rule, RuleSet};
 pub use source::{LintError, SourceInput, Span};
@@ -141,7 +142,12 @@ fn lint_here(
         Language::Rust => rust_syntax::parse(input, |file| {
             let suppressions = rust_suppressions(input)?;
             let mut sink = diagnostic::Sink::new(input, config, &suppressions);
-            rust_rules::lint(&mut sink, file, input, config);
+            let boundary = match config.json_boundary(&input.name) {
+                Some(_) => expression_rules::JsonContext::Boundary,
+                None => expression_rules::JsonContext::Domain,
+            };
+            rust_rules::lint(&mut sink, file, input, config, boundary);
+            expression_rules::lint(&mut sink, file, boundary);
             test_review_rules::lint(&mut sink, file);
             sink.report_unknown();
             sink.finish()

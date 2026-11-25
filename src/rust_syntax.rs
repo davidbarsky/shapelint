@@ -14,6 +14,18 @@ pub(crate) struct RustFile<'a> {
 }
 
 impl RustFile<'_> {
+    pub fn named_item(&self, item: &ast::Item) -> Option<(crate::Span, String)> {
+        let name = match &item.kind {
+            ast::ItemKind::Struct(name, _, _) => format!("struct {name}"),
+            ast::ItemKind::Enum(name, _, _) => format!("enum {name}"),
+            ast::ItemKind::Static(value) => format!("static {}", value.ident),
+            ast::ItemKind::TyAlias(value) => format!("type {}", value.ident),
+            ast::ItemKind::Trait(value) => format!("trait {}", value.ident),
+            _ => return None,
+        };
+        Some((self.item_span(item.span, &item.attrs), name))
+    }
+
     pub fn item_span(&self, span: Span, attrs: &[rustc_ast::Attribute]) -> crate::Span {
         let start = attrs
             .iter()

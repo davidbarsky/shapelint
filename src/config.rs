@@ -122,6 +122,20 @@ pub struct ConfigParse {
 }
 
 impl Config {
+    pub(crate) fn json_boundary(&self, path: &str) -> Option<&PathPattern> {
+        self.json_boundary.iter().find(|pattern| match pattern {
+            PathPattern::Substring(pattern) => path.contains(pattern),
+            PathPattern::Glob(pattern) => pattern.matches_with(
+                path,
+                glob::MatchOptions {
+                    case_sensitive: true,
+                    require_literal_separator: true,
+                    require_literal_leading_dot: false,
+                },
+            ),
+        })
+    }
+
     /// Parses `.shapelint` text: `key = value` lines, `#` starts a comment.
     pub fn parse(text: &str) -> ConfigParse {
         let mut config = Config::default();
