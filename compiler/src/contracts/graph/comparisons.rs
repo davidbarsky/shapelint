@@ -131,7 +131,22 @@ impl Default for Comparisons<'_> {
         }
     }
 }
-impl<'g> Comparisons<'g> {}
+impl<'g> Comparisons<'g> {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            searches: Arc::clone(&self.searches),
+            contexts: self.contexts.clone(),
+            fragments: self.fragments.share(),
+            nodes: self.nodes.clone(),
+            edge_maps: self.edge_maps.share(),
+            constant_maps: self.constant_maps.share(),
+            variant_maps: self.variant_maps.share(),
+            edges: self.edges.share(),
+            constants: self.constants.share(),
+            variants: self.variants.share(),
+        }
+    }
+}
 
 impl<'g> std::ops::Index<ComparisonId<'g>> for Comparisons<'g> {
     type Output = Comparison<'g>;

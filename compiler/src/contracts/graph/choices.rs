@@ -70,7 +70,17 @@ impl Default for Choices<'_> {
     }
 }
 
-impl<'g> Choices<'g> {}
+impl<'g> Choices<'g> {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            members: self.members.share(),
+            indexed: self.indexed.share(),
+            joined: Arc::clone(&self.joined),
+            filtered: Arc::clone(&self.filtered),
+        }
+    }
+}
 
 impl<'g> Choices<'g> {
     fn index(

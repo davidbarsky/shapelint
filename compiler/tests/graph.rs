@@ -384,6 +384,34 @@ fn condition_id_cannot_enter_another_graph() {
     assert!(diagnostics.contains("E0521"), "{diagnostics}");
 }
 
+#[test]
+fn session_graph_id_cannot_enter_another_session() {
+    let valid = compile_identity_probe(
+        "extern crate rustc_middle; fn probe(tcx: rustc_middle::ty::TyCtxt<'_>) { let session = shapelint_driver::analysis::Session::new(); session.finish(tcx, |graph, _| { let id = graph.intern_expr(graph::ExprNode::Unknown).unwrap(); let _ = &graph[id]; }); }",
+    );
+    assert!(
+        valid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    let invalid = compile_identity_probe(
+        "extern crate rustc_middle; fn probe(tcx: rustc_middle::ty::TyCtxt<'_>) { let first = shapelint_driver::analysis::Session::new(); let second = shapelint_driver::analysis::Session::new(); first.finish(tcx, |outer, _| { let id = outer.intern_expr(graph::ExprNode::Unknown).unwrap(); second.finish(tcx, |inner, _| { let _ = &inner[id]; }); }); }",
+    );
+    assert!(!invalid.status.success());
+    let diagnostics = String::from_utf8(invalid.stderr).unwrap();
+    assert!(diagnostics.contains("E0521"), "{diagnostics}");
+}
+
+#[test]
+fn session_graph_id_cannot_escape_its_session() {
+    let invalid = compile_identity_probe(
+        "extern crate rustc_middle; fn probe(tcx: rustc_middle::ty::TyCtxt<'_>) { let session = shapelint_driver::analysis::Session::new(); let _id = session.finish(tcx, |graph, _| graph.intern_expr(graph::ExprNode::Unknown).unwrap()); }",
+    );
+    assert!(!invalid.status.success());
+    let diagnostics = String::from_utf8(invalid.stderr).unwrap();
+    assert!(diagnostics.contains("lifetime"), "{diagnostics}");
+}
+
 #[derive(Clone, Copy, Debug, hegel::DefaultGenerator)]
 enum TypeLayer {
     Slice,

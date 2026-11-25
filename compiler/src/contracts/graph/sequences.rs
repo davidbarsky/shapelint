@@ -48,13 +48,10 @@ macro_rules! summary_sequence {
 }
 
 summary_sequence!(
-    crate::contracts::graph::flows::Obligation<'g, ConditionId<'g>, FlowId<'g>>,
+    crate::protocols::Obligation<'g, ConditionId<'g>, FlowId<'g>>,
     protocol_checks
 );
-summary_sequence!(
-    crate::contracts::graph::flows::Return<FlowId<'g>>,
-    protocol_returns
-);
+summary_sequence!(crate::protocols::Return<FlowId<'g>>, protocol_returns);
 summary_sequence!(Span, loops);
 summary_sequence!(contracts::Check<'g, ConditionId<'g>>, checks);
 summary_sequence!(summaries::RequirementNode<'g>, requirements);

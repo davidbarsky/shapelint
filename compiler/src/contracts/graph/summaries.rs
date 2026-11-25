@@ -63,8 +63,8 @@ pub(crate) type CallNode<'g> = contracts::Call<'g, ExprId<'g>, ConditionId<'g>, 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SummaryNode<'g> {
     pub protocol_checks:
-        Sequence<'g, crate::contracts::graph::flows::Obligation<'g, ConditionId<'g>, FlowId<'g>>>,
-    pub protocol_returns: Sequence<'g, crate::contracts::graph::flows::Return<FlowId<'g>>>,
+        Sequence<'g, crate::protocols::Obligation<'g, ConditionId<'g>, FlowId<'g>>>,
+    pub protocol_returns: Sequence<'g, crate::protocols::Return<FlowId<'g>>>,
     pub inspections: Sequence<'g, ExprId<'g>>,
     pub escapes: SetId<'g, DefId>,
     pub escaped_arguments: SetId<'g, usize>,
@@ -84,8 +84,8 @@ pub struct Summaries<'g> {
     nodes: Intern<SummaryId<'g>, SummaryNode<'g>>,
     consumers: Intern<ConsumerId<'g>, ConsumerNode<'g>>,
     pub protocol_checks:
-        Sequences<'g, crate::contracts::graph::flows::Obligation<'g, ConditionId<'g>, FlowId<'g>>>,
-    pub protocol_returns: Sequences<'g, crate::contracts::graph::flows::Return<FlowId<'g>>>,
+        Sequences<'g, crate::protocols::Obligation<'g, ConditionId<'g>, FlowId<'g>>>,
+    pub protocol_returns: Sequences<'g, crate::protocols::Return<FlowId<'g>>>,
     pub loops: Sequences<'g, Span>,
     pub checks: Sequences<'g, contracts::Check<'g, ConditionId<'g>>>,
     pub requirements: Sequences<'g, RequirementNode<'g>>,

@@ -1038,6 +1038,13 @@ impl<T, U> Default for Fold<'_, T, U> {
     }
 }
 impl<'g, T, U> Fold<'g, T, U> {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            completed: Arc::clone(&self.completed),
+            marker: PhantomData,
+        }
+    }
+
     // shapelint: allow(shallow-helper) Cache access is a short lock boundary outside callbacks.
     fn get(&self, id: NodeId) -> Option<U>
     where
@@ -1425,6 +1432,13 @@ impl<T, C> Default for TransformCache<'_, T, C> {
     }
 }
 impl<'g, T: Clone + Eq + Hash, C: Clone + Eq + Hash> TransformCache<'g, T, C> {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            completed: Arc::clone(&self.completed),
+            marker: PhantomData,
+        }
+    }
+
     // shapelint: allow(shallow-helper) Cache access is a short lock boundary outside rewrite callbacks.
     fn get(&self, key: &(NodeId, C)) -> Option<Option<NodeId>> {
         self.completed.lock().get(key).copied()

@@ -825,6 +825,17 @@ impl<'g, K, V, F, R> Composition<'g, K, V, F, R> {
             marker: PhantomData,
         }
     }
+    pub(crate) fn share(&self) -> Self
+    where
+        F: Clone,
+    {
+        Self {
+            identical: self.identical,
+            combine: self.combine.clone(),
+            completed: self.completed.clone(),
+            marker: PhantomData,
+        }
+    }
 }
 impl<'g, K: Eq + Hash, V: Eq + Hash, F, R: Routing<K>> Composition<'g, K, V, F, R> {
     pub fn compose<C, E>(

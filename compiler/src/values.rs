@@ -225,6 +225,46 @@ value_list!(GenericsId, GenericId<'g>, generic_lists);
 value_list!(FieldsId, usize, field_lists);
 value_list!(CallsId, (DefId, Local), call_lists);
 
+pub(crate) trait StoreValue<T> {
+    type Id;
+    fn intern_value(&mut self, value: T) -> Result<Self::Id, CapacityError>;
+}
+
+impl<'g, N: InternNode<'g>> StoreValue<N> for Values<'g> {
+    type Id = N::Id;
+    fn intern_value(&mut self, node: N) -> Result<Self::Id, CapacityError> {
+        node.intern(self)
+    }
+}
+
+impl<'g> StoreValue<&str> for Values<'g> {
+    type Id = TextId<'g>;
+    fn intern_value(&mut self, text: &str) -> Result<Self::Id, CapacityError> {
+        self.intern_text(text)
+    }
+}
+
+impl<'g> StoreValue<&calls::Instance> for Values<'g> {
+    type Id = InstanceId<'g>;
+    fn intern_value(&mut self, value: &calls::Instance) -> Result<Self::Id, CapacityError> {
+        self.intern_instance(value)
+    }
+}
+
+impl<'g> StoreValue<&calls::Type> for Values<'g> {
+    type Id = TypeId<'g>;
+    fn intern_value(&mut self, value: &calls::Type) -> Result<Self::Id, CapacityError> {
+        self.intern_type(value)
+    }
+}
+
+impl<'g> StoreValue<&Origin> for Values<'g> {
+    type Id = OriginId<'g>;
+    fn intern_value(&mut self, value: &Origin) -> Result<Self::Id, CapacityError> {
+        self.intern_origin(value)
+    }
+}
+
 pub trait InternNode<'g> {
     type Id;
     fn intern(self, values: &mut Values<'g>) -> Result<Self::Id, CapacityError>;

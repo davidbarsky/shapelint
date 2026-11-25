@@ -142,6 +142,16 @@ impl<T: Eq + Hash> Sets<'_, T> {
             work: Work::default(),
         }
     }
+
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            nodes: self.nodes.clone(),
+            combinations: self.combinations.clone(),
+            subsets: self.subsets.clone(),
+            work: Work::default(),
+        }
+    }
 }
 
 pub struct Cursor<'g, T> {

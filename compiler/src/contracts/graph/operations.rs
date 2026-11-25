@@ -502,6 +502,20 @@ impl<'g> Graph<'g> {
         }
     }
 
+    pub(crate) fn downcast(&self, value: ExprId<'g>, variant: usize) -> ExprId<'g> {
+        if let ExprNode::Select(_, yes, no) = self[value]
+            && let (ExprNode::Variant(_, yes_variant, _), ExprNode::Variant(_, no_variant, _)) =
+                (&self[yes], &self[no])
+        {
+            match (*yes_variant == variant, *no_variant == variant) {
+                (true, false) => return yes,
+                (false, true) => return no,
+                _ => {}
+            }
+        }
+        value
+    }
+
     pub fn field(&mut self, root: ExprId<'g>, index: usize) -> Result<ExprId<'g>, CapacityError> {
         use crate::memo::{Demand, resolve};
         #[derive(Clone, Copy)]

@@ -548,6 +548,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "serde",
  "serde_json",
+ "shapelint",
  "tempfile",
  "thiserror",
 ]

@@ -1,12 +1,15 @@
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty;
+use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::Span;
 
+use crate::diagnostics;
 use crate::sequence::Sequence;
 use graph::CapacityError;
 
+pub(crate) mod describe;
 pub mod graph;
+pub mod schedule;
 pub use graph::{operations, summaries};
 pub(crate) mod tree;
 pub use crate::values::{Identity, Invocation, Origin, Relocation};
@@ -120,6 +123,27 @@ pub struct Consumer {
     pub operation: Operation,
 }
 
+impl Consumer {
+    pub fn source(&self, tcx: TyCtxt<'_>, sources: &diagnostics::Sources) -> shapelint::Related {
+        let span = self.span.source_callsite();
+        let file = tcx.sess.source_map().lookup_source_file(span.lo());
+        let input = match sources.input(file.as_ref()) {
+            Ok(input) => input,
+            Err(error) => tcx.dcx().fatal(error.to_string()),
+        };
+        shapelint::Related {
+            input,
+            label: shapelint::Label {
+                span: shapelint::Span {
+                    start: file.original_relative_byte_pos(span.lo()).0,
+                    end: file.original_relative_byte_pos(span.hi()).0,
+                },
+                message: format!("check originates in `{}`", diagnostics::item(tcx, self.def)),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Eq, Hash)]
 pub struct Requirement<'g, C = Condition> {
     pub invalidated: Sequence<'g, InvalidatedFact<C>>,
@@ -210,7 +234,7 @@ impl Behavior {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CheckBasis<S> {
     #[default]
     Expression,
@@ -259,8 +283,8 @@ pub struct Construction<'g, E = Expr, C = Condition> {
 }
 
 pub struct Summary<'g, E = Expr, C = Condition, T = Target, F = std::convert::Infallible> {
-    pub protocol_checks: Vec<crate::contracts::graph::flows::Obligation<'g, C, F>>,
-    pub protocol_returns: Vec<crate::contracts::graph::flows::Return<F>>,
+    pub protocol_checks: Vec<crate::protocols::Obligation<'g, C, F>>,
+    pub protocol_returns: Vec<crate::protocols::Return<F>>,
     pub inspections: Vec<E>,
     pub escapes: FxHashSet<DefId>,
     pub escaped_arguments: FxHashSet<usize>,
