@@ -196,6 +196,21 @@ pub const RULES: &[Rule] = &[
         summary: "a collection path names BTreeMap or BTreeSet",
     },
     Rule {
+        id: "literal-test-cases",
+        set: RuleSet::Lints,
+        summary: "test loops over fixed cases instead of reporting each case separately",
+    },
+    Rule {
+        id: "primitive-test-actions",
+        set: RuleSet::Lints,
+        summary: "primitive random draws are decoded into domain actions",
+    },
+    Rule {
+        id: "arbitrary-bound",
+        set: RuleSet::Lints,
+        summary: "literal bound lacks a named domain or resource constraint",
+    },
+    Rule {
         id: "redundant-comment",
         set: RuleSet::Lints,
         summary: "comment restates adjacent code or carries TODO/section scaffolding",

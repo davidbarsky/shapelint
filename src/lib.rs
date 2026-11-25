@@ -176,7 +176,7 @@ fn lint_here(
             rust_rules::lint(&mut sink, file, input, config, boundary);
             api_rules::lint(&mut sink, file);
             expression_rules::lint(&mut sink, file, boundary);
-            test_review_rules::lint(&mut sink, file);
+            test_review_rules::lint(&mut sink, file, &input.name);
             sink.report_unknown();
             let mut facts = workspace::collect(file);
             facts.path = input.name.to_string();
