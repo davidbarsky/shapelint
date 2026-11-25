@@ -49,3 +49,8 @@ pub fn evaluate_crate<'g>(
     }
     Ok(evaluator.finish_work())
 }
+
+pub struct SourceFindings {
+    pub input: shapelint::SourceInput,
+    pub findings: Vec<shapelint::Finding>,
+}

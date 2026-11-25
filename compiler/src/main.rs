@@ -8,7 +8,11 @@ extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_mir_transform;
+extern crate rustc_session;
 extern crate rustc_structures;
+
+use shapelint::{Style, render};
+use std::io::{BufWriter, IsTerminal, Write};
 
 use std::process::ExitCode;
 use std::sync::OnceLock;
@@ -32,7 +36,44 @@ struct Session {
 // This binary runs one compiler session; only lifetime-free evidence crosses the boundary.
 static SESSION: OnceLock<Session> = OnceLock::new();
 
+enum Output {
+    Text(Style),
+    Json,
+    Record(Option<Style>),
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "record", rename_all = "snake_case")]
+enum Record<'a> {
+    Header {
+        version: u32,
+    },
+    Source {
+        id: usize,
+        input: &'a shapelint::SourceInput,
+    },
+    Finding {
+        finding: &'a shapelint::Finding,
+        related: Vec<Related>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rendered: Option<String>,
+    },
+}
+
+#[derive(serde::Serialize)]
+struct Related {
+    source: usize,
+    label: shapelint::Label,
+}
+
+enum CargoOutput {
+    Check,
+    Other,
+}
+
 struct Driver {
+    cargo_output: CargoOutput,
+    diagnostics: Diagnostics,
     summary_inputs: artifacts::Inputs,
     summary_output: Option<std::path::PathBuf>,
     status: ExitCode,
@@ -77,7 +118,30 @@ impl Callbacks for Driver {
             tcx.dcx()
                 .fatal("summary output requires an importable library crate");
         }
-        let metadata = if let Some(_) = self.summary_output {
+        if let CargoOutput::Check = self.cargo_output {
+            use rustc_session::config::{OutFileName, OutputType};
+            let outputs = &tcx.sess.opts.output_types;
+            let actual: rustc_data_structures::fx::FxHashSet<_> = outputs.keys().copied().collect();
+            let expected = rustc_data_structures::fx::FxHashSet::from_iter([
+                OutputType::DepInfo,
+                OutputType::Metadata,
+            ]);
+            if actual != expected {
+                tcx.dcx()
+                    .fatal("--cargo-check-only requires dep-info and metadata output");
+            }
+            for output in expected {
+                match tcx.output_filenames(()).path(output) {
+                    OutFileName::Real(_) => {}
+                    OutFileName::Stdout => tcx
+                        .dcx()
+                        .fatal("--cargo-check-only requires dep-info and metadata output"),
+                }
+            }
+        }
+        let metadata = if let (Some(_), _) | (_, CargoOutput::Check) =
+            (&self.summary_output, &self.cargo_output)
+        {
             match rustc_metadata::fs::encode_and_write_metadata(tcx) {
                 Ok(metadata) => Some(metadata),
                 Err(_) => {
@@ -105,7 +169,115 @@ impl Callbacks for Driver {
                 }
             }
         });
+        if let Err(error) = self.diagnostics.write([]) {
+            tcx.dcx()
+                .fatal(format!("shapelint diagnostics output: {error}"));
+        }
+        if let CargoOutput::Check = self.cargo_output {
+            tcx.report_unused_features();
+            tcx.dcx().abort_if_errors();
+        }
         Compilation::Stop
+    }
+}
+
+struct Diagnostics {
+    output: Output,
+    writer: Box<dyn Write + Send>,
+}
+
+impl Diagnostics {
+    fn parse_or_forward(
+        &mut self,
+        arg: String,
+        arguments: &mut impl Iterator<Item = String>,
+        rustc: &mut Vec<String>,
+        style: Style,
+    ) -> Result<(), String> {
+        if arg == "--diagnostics-output" {
+            let path = arguments
+                .next()
+                .ok_or("--diagnostics-output requires a path")?;
+            let file = std::fs::File::create(&path)
+                .map_err(|error| format!("could not create diagnostics output {path}: {error}"))?;
+            self.writer = Box::new(BufWriter::new(file));
+        } else if arg == "--format" || arg.starts_with("--format=") {
+            let format = match arg.strip_prefix("--format=") {
+                Some(format) => Some(format.to_owned()),
+                None => arguments.next(),
+            };
+            self.output = match format.as_deref() {
+                Some("text") => Output::Text(style),
+                Some("json") => Output::Json,
+                Some("record") => Output::Record(Some(style)),
+                Some("record-json") => Output::Record(None),
+                Some(_) | None => {
+                    return Err("--format requires text, json, record, or record-json".into());
+                }
+            };
+        } else {
+            rustc.push(arg);
+        }
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        sources: impl IntoIterator<Item = pipeline::SourceFindings>,
+    ) -> std::io::Result<()> {
+        if let Output::Record(_) = self.output {
+            serde_json::to_writer(&mut self.writer, &Record::Header { version: 2 })?;
+            writeln!(self.writer)?;
+        }
+        let mut source_ids = rustc_data_structures::fx::FxHashMap::default();
+        // Keep each source allocation alive while its address identifies it in this stream.
+        let mut shared_sources = Vec::new();
+        for pipeline::SourceFindings { input, findings } in sources {
+            match self.output {
+                Output::Text(style) => write!(self.writer, "{}", render(&findings, &input, style))?,
+                Output::Json => {
+                    for finding in findings {
+                        serde_json::to_writer(&mut self.writer, &finding)?;
+                        writeln!(self.writer)?;
+                    }
+                }
+                Output::Record(style) => {
+                    for mut finding in findings {
+                        let rendered = style
+                            .map(|style| render(std::slice::from_ref(&finding), &input, style));
+                        let mut related = Vec::new();
+                        for shapelint::Related { input, label } in
+                            std::mem::take(&mut finding.related)
+                        {
+                            let text: &str = input.as_ref();
+                            let key = (input.name.clone(), text.as_ptr() as usize, text.len());
+                            let source = match source_ids.entry(key) {
+                                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    let id = shared_sources.len();
+                                    serde_json::to_writer(
+                                        &mut self.writer,
+                                        &Record::Source { id, input: &input },
+                                    )?;
+                                    writeln!(self.writer)?;
+                                    shared_sources.push(input);
+                                    *entry.insert(id)
+                                }
+                            };
+                            related.push(Related { source, label });
+                        }
+                        let record = Record::Finding {
+                            finding: &finding,
+                            related,
+                            rendered,
+                        };
+                        serde_json::to_writer(&mut self.writer, &record)?;
+                        writeln!(self.writer)?;
+                    }
+                }
+            }
+        }
+        self.writer.flush()
     }
 }
 
@@ -135,6 +307,23 @@ fn capture<'tcx>(
 }
 
 fn main() -> ExitCode {
+    let style = match std::env::var("SHAPELINT_CARGO_COLOR").as_deref() {
+        Ok("always") => Style::Ansi,
+        Ok("never") => Style::Plain,
+        Err(std::env::VarError::NotPresent) => match std::io::stdout().is_terminal() {
+            true => Style::Ansi,
+            false => Style::Plain,
+        },
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("shapelint-driver: SHAPELINT_CARGO_COLOR requires always or never");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut diagnostics = Diagnostics {
+        output: Output::Text(style),
+        writer: Box::new(BufWriter::new(std::io::stdout())),
+    };
+    let mut cargo_output = CargoOutput::Other;
     let mut arguments = std::env::args();
     let mut args: Vec<_> = arguments.next().into_iter().collect();
     let mut summary_paths = Vec::new();
@@ -152,7 +341,15 @@ fn main() -> ExitCode {
                     _ => unreachable!("summary option dispatch"),
                 }
             }
-            _ => args.push(arg),
+            "--cargo-check-only" => cargo_output = CargoOutput::Check,
+            _ => {
+                if let Err(error) =
+                    diagnostics.parse_or_forward(arg, &mut arguments, &mut args, style)
+                {
+                    eprintln!("shapelint-driver: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     }
     let mut summary_inputs = match artifacts::Inputs::try_from(summary_paths.as_slice()) {
@@ -164,6 +361,8 @@ fn main() -> ExitCode {
     };
     args.extend(std::mem::take(&mut summary_inputs.externs));
     let mut driver = Driver {
+        cargo_output,
+        diagnostics,
         summary_inputs,
         summary_output,
         status: ExitCode::SUCCESS,
