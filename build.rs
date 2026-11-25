@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         target => return Err(format!("unsupported compiler-driver host: {target}").into()),
     };
     if let Some(runtime) = runtime {
+        println!("cargo:rustc-link-search=native={sysroot}/lib");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{runtime}");
         if let None = std::env::var_os("SHAPELINT_BUNDLED_RUNTIME") {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{sysroot}/lib");
