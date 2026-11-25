@@ -124,10 +124,10 @@ macro_rules! arena_id {
 arena_id!(ExprId, ConditionId, FlowId, AlternativeId, RewriteId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct GuardContextId<'g>(pub(crate) Sequence<'g, ConditionId<'g>>);
+pub struct GuardContextId<'g>(pub(crate) Sequence<'g, ConditionId<'g>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ArgumentContextId<'g>(pub(crate) Sequence<'g, ExprId<'g>>);
+pub struct ArgumentContextId<'g>(pub(crate) Sequence<'g, ExprId<'g>>);
 
 impl<'g> From<Sequence<'g, ConditionId<'g>>> for GuardContextId<'g> {
     fn from(sequence: Sequence<'g, ConditionId<'g>>) -> Self {
@@ -213,6 +213,7 @@ impl<'g> Graph<'g> {
             rewritten_conditions: Memo::new(),
             rewritten_guard_sequences: sequence::Remap::default(),
             rewritten_argument_sequences: sequence::Remap::default(),
+            rewritten_invalidated_sequences: sequence::Remap::default(),
         }
     }
 }
@@ -308,6 +309,8 @@ pub struct Graph<'g> {
     pub(crate) rewritten_conditions: Memo<(RewriteId<'g>, ConditionId<'g>), ConditionId<'g>>,
     pub(crate) rewritten_guard_sequences: sequence::Remap<'g, ConditionId<'g>, RewriteId<'g>>,
     pub(crate) rewritten_argument_sequences: sequence::Remap<'g, ExprId<'g>, RewriteId<'g>>,
+    pub(crate) rewritten_invalidated_sequences:
+        sequence::Remap<'g, crate::contracts::InvalidatedFact<ConditionId<'g>>, RewriteId<'g>>,
     pub(crate) rewrites: Intern<RewriteId<'g>, RewriteKey<'g>>,
     pub condition_sequences: sequence::Sequences<'g, ConditionId<'g>>,
     pub expression_sequences: sequence::Sequences<'g, ExprId<'g>>,
@@ -378,6 +381,7 @@ impl<'g> Graph<'g> {
             rewritten_conditions: self.rewritten_conditions.clone(),
             rewritten_guard_sequences: self.rewritten_guard_sequences.share(),
             rewritten_argument_sequences: self.rewritten_argument_sequences.share(),
+            rewritten_invalidated_sequences: self.rewritten_invalidated_sequences.share(),
         }
     }
 
@@ -678,6 +682,16 @@ impl<'g> Graph<'g> {
                 self.proof_work.conjunction_cache_entries.saturating_add(1);
         }
         Ok(result)
+    }
+
+    pub(crate) fn guard_prefix(
+        &mut self,
+        context: GuardContextId<'g>,
+    ) -> Result<Option<(GuardContextId<'g>, ConditionId<'g>)>, CapacityError> {
+        Ok(self
+            .condition_sequences
+            .prefix(context.0)?
+            .map(|(prefix, condition)| (GuardContextId(prefix), condition)))
     }
 
     /// Treats alternatives as a set, retaining the first interned member order.

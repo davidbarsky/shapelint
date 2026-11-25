@@ -62,6 +62,14 @@ impl Callbacks for Driver {
 
     fn after_analysis<'tcx>(&mut self, _: &interface::Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         tcx.dcx().abort_if_errors();
+        let session = SESSION
+            .get()
+            .expect("after_expansion installed the compiler session");
+        session.analyses.finish(tcx, |graph, analyses| {
+            if let Err(error) = shapelint_driver::pipeline::evaluate_crate(tcx, graph, analyses) {
+                tcx.dcx().fatal(error.to_string());
+            }
+        });
         Compilation::Stop
     }
 }

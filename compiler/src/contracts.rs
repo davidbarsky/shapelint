@@ -9,6 +9,7 @@ use graph::CapacityError;
 
 pub(crate) mod describe;
 pub mod graph;
+pub mod recursion;
 pub mod schedule;
 pub use graph::{operations, summaries};
 pub(crate) mod tree;

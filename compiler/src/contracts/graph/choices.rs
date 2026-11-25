@@ -8,7 +8,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHasher};
 
 use crate::arena::{ArenaId, Intern};
 use crate::contracts::graph::sets::{Combination, SetId, Sets};
-use crate::contracts::graph::{CapacityError, ExprId, ExprNode, Graph, NodeId};
+use crate::contracts::graph::{ArgumentContextId, CapacityError, ExprId, ExprNode, Graph, NodeId};
 use crate::sequence::{Fold, Part, Sequence, Sequences};
 
 fn hash<T: Hash>(value: &T) -> u64 {
@@ -344,6 +344,16 @@ impl<'g> Graph<'g> {
                 Ok(result)
             },
         )
+    }
+
+    pub(crate) fn argument_prefix(
+        &mut self,
+        context: ArgumentContextId<'g>,
+    ) -> Result<Option<(ArgumentContextId<'g>, ExprId<'g>)>, CapacityError> {
+        Ok(self
+            .expression_sequences
+            .prefix(context.0)?
+            .map(|(prefix, value)| (ArgumentContextId(prefix), value)))
     }
 }
 

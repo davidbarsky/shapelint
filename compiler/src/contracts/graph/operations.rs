@@ -88,6 +88,7 @@ pub(crate) enum InputUse {
 pub(crate) enum InputSequence<'g> {
     Conditions(Sequence<'g, ConditionId<'g>>),
     Expressions(Sequence<'g, ExprId<'g>>),
+    Invalidated(Sequence<'g, crate::contracts::InvalidatedFact<ConditionId<'g>>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -985,6 +986,18 @@ impl<'g> Graph<'g> {
                                 ),
                             }
                         }
+                        InputSequence::Invalidated(sequence) => {
+                            match self.invalidated_sequences.parts(sequence)? {
+                                crate::sequence::Parts::Empty => Part::Empty,
+                                crate::sequence::Parts::Leaf(fact) => {
+                                    Part::Leaf(NodeId::Condition(fact.condition))
+                                }
+                                crate::sequence::Parts::Branch(left, right) => Part::Branch(
+                                    InputSequence::Invalidated(left),
+                                    InputSequence::Invalidated(right),
+                                ),
+                            }
+                        }
                     };
                     let inputs = match part {
                         Part::Empty => Inputs::Known(SetId::EMPTY),
@@ -1161,6 +1174,33 @@ impl<'g> Graph<'g> {
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn substitute_invalidated(
+        &mut self,
+        facts: &Sequence<'g, crate::contracts::InvalidatedFact<ConditionId<'g>>>,
+        arguments: &Sequence<'g, ExprId<'g>>,
+        scope: &Invocation<'g>,
+    ) -> Result<Sequence<'g, crate::contracts::InvalidatedFact<ConditionId<'g>>>, CapacityError>
+    {
+        let inputs = self
+            .sequence_input_summary(InputSequence::Invalidated(*facts), InputUse::Substitution)?;
+        let prepared = self.prepare_rewrite(Rewrite::Substitute(arguments, scope), inputs)?;
+        let context = prepared.context;
+        let mut mapped = self.rewritten_invalidated_sequences.share();
+        mapped.apply(
+            self,
+            |graph| &mut graph.invalidated_sequences,
+            *facts,
+            context,
+            |graph, fact| {
+                Ok(crate::contracts::InvalidatedFact {
+                    condition: graph.rewrite_condition(fact.condition, &prepared)?,
+                    def: fact.def,
+                    span: fact.span,
+                })
+            },
+        )
     }
 
     pub fn substitute_guards(

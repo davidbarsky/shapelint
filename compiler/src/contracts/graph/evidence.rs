@@ -57,6 +57,32 @@ impl<'g> Graph<'g> {
         )
     }
 
+    pub(crate) fn combine_bases(
+        &mut self,
+        left: &crate::contracts::CheckBasis<crate::sequence::Sequence<'g, ConditionId<'g>>>,
+        right: &crate::contracts::CheckBasis<crate::sequence::Sequence<'g, ConditionId<'g>>>,
+    ) -> Result<
+        crate::contracts::CheckBasis<crate::sequence::Sequence<'g, ConditionId<'g>>>,
+        CapacityError,
+    > {
+        use crate::contracts::CheckBasis;
+        match (left, right) {
+            (CheckBasis::Expression, basis) | (basis, CheckBasis::Expression) => Ok(basis.clone()),
+            (CheckBasis::ControlFlow(left), CheckBasis::ControlFlow(right)) => {
+                let left = GuardContextId::from(*left);
+                let right = GuardContextId::from(*right);
+                let left = self.guard_membership(left)?;
+                let right = self.guard_membership(right)?;
+                let evidence = Evidence(self.guard_member_sets.combine(
+                    Combination::Union,
+                    left,
+                    right,
+                )?);
+                Ok(CheckBasis::ControlFlow(self.evidence_sequence(evidence)?))
+            }
+        }
+    }
+
     pub(crate) fn discharge(
         &mut self,
         evidence: Evidence<'g>,

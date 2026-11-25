@@ -1,7 +1,9 @@
-use crate::contracts::Writes;
 use crate::contracts::graph::evidence::Evidence;
 use crate::contracts::graph::sets::{Combination, Cursor, SetId};
-use crate::contracts::graph::{CapacityError, Graph, NodeId};
+use crate::contracts::graph::summaries::CallNode;
+use crate::contracts::graph::{CapacityError, ConditionId, ExprId, Graph, NodeId, TargetNode};
+use crate::contracts::{CheckBasis, Invocation, Writes};
+use crate::sequence::Sequence;
 use crate::values::{self, Values};
 use rustc_hir::def_id::DefId;
 use std::ops::Index;
@@ -38,6 +40,17 @@ impl<'g> Graph<'g> {
         std::iter::from_fn(move || cursor.next(self))
     }
 
+    pub(crate) fn independent_arguments(
+        &mut self,
+        left: SetId<'g, usize>,
+        right: SetId<'g, usize>,
+    ) -> Result<Option<()>, CapacityError> {
+        let intersection = self
+            .input_sets
+            .combine(Combination::Intersection, left, right)?;
+        Ok((intersection == SetId::EMPTY).then_some(()))
+    }
+
     pub(crate) fn record_argument_write(
         &mut self,
         writes: &mut Writes<'g>,
@@ -45,6 +58,18 @@ impl<'g> Graph<'g> {
     ) -> Result<(), CapacityError> {
         let argument = self.input_sets.insert(SetId::EMPTY, position)?;
         writes.merge(&Writes::Arguments(argument), self)
+    }
+
+    pub(crate) fn include_guard(
+        &mut self,
+        members: &mut SetId<'g, ConditionId<'g>>,
+        condition: ConditionId<'g>,
+    ) -> Result<Option<()>, CapacityError> {
+        if let Some(()) = self.guard_member_sets.contains(*members, condition) {
+            return Ok(None);
+        }
+        *members = self.guard_member_sets.insert(*members, condition)?;
+        Ok(Some(()))
     }
 
     pub(crate) fn combine_evidence(
@@ -85,6 +110,21 @@ where
 }
 
 impl<'g> Graph<'g> {
+    pub(crate) fn unsupported_consumer(
+        &mut self,
+        def: DefId,
+        span: rustc_span::Span,
+        reason: &str,
+    ) -> Result<crate::contracts::summaries::ConsumerId<'g>, CapacityError> {
+        let reason = self.values.intern_text(reason)?;
+        self.summaries
+            .intern_consumer(crate::contracts::summaries::ConsumerNode {
+                def,
+                span,
+                operation: crate::contracts::summaries::OperationNode::Unsupported(reason),
+            })
+    }
+
     pub(crate) fn origin_local(
         &self,
         id: values::OriginId<'g>,
@@ -97,6 +137,55 @@ impl<'g> Graph<'g> {
                 .unwrap_or(identity.origin)
                 .1,
         )
+    }
+
+    pub(crate) fn substitute_call(
+        &mut self,
+        call: &CallNode<'g>,
+        arguments: &Sequence<'g, ExprId<'g>>,
+        invocation: &Invocation<'g>,
+    ) -> Result<CallNode<'g>, CapacityError> {
+        let target = match call.target {
+            TargetNode::Direct(instance) => TargetNode::Direct(
+                self.values
+                    .substitute_instance(instance, invocation.generics)?,
+            ),
+            TargetNode::Indirect(value) => {
+                TargetNode::Indirect(self.substitute_expr(value, arguments, invocation)?)
+            }
+        };
+        Ok(CallNode {
+            basis: match &call.basis {
+                CheckBasis::Expression => CheckBasis::Expression,
+                CheckBasis::ControlFlow(basis) => {
+                    CheckBasis::ControlFlow(self.substitute_guards(basis, arguments, invocation)?)
+                }
+            },
+            target,
+            arguments: self.substitute_arguments(&call.arguments, arguments, invocation)?,
+            guards: self.substitute_guards(&call.guards, arguments, invocation)?,
+            span: call.span,
+        })
+    }
+
+    pub(crate) fn specialize_receiver(
+        &mut self,
+        instance: &mut values::InstanceNode<'g>,
+        ty: values::TypeId<'g>,
+    ) -> Result<Option<()>, CapacityError> {
+        let first = self.values.iter(instance.args).next();
+        let Some(first) = first else {
+            return Ok(None);
+        };
+        let values::GenericNode::Type(_) = self.values[first] else {
+            return Ok(None);
+        };
+        let replacement = self.values.intern(values::GenericNode::Type(ty))?;
+        instance.args = self
+            .values
+            .replace_generic(instance.args, 0, replacement)?
+            .expect("receiver generic exists");
+        Ok(Some(()))
     }
 
     pub(crate) fn instance_with_args(

@@ -24,7 +24,7 @@ mod text_syntax;
 pub use config::{
     CONFIG_KEYS, Config, ConfigParse, ConfigWarning, PathPattern, SourceMode, Thresholds,
 };
-pub use control_flow::CompilerEvidence;
+pub use control_flow::{CheckOutcome, CompilerEvidence};
 pub use diagnostic::{Finding, Footer, Label, Related, Style, render};
 pub use rules::{Kind, RULES, Rule, RuleSet};
 pub use source::{LintError, SourceInput, Span};
