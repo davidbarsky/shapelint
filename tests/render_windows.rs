@@ -262,6 +262,69 @@ fn empty_source_rendering_keeps_its_one_line() {
         full_source(&finding, &input, Style::Plain)
     );
 }
+
+#[derive(Clone, Copy, Debug, hegel::DefaultGenerator)]
+enum LabelPosition {
+    Primary,
+    Context,
+    Related,
+    Suggestion,
+}
+
+#[derive(Clone, Copy, Debug, hegel::DefaultGenerator)]
+enum InvalidRange {
+    Reversed,
+    PastEnd,
+    InsideCharacter,
+}
+
+#[hegel::test]
+fn a_malformed_label_keeps_the_diagnostic_title(tc: hegel::TestCase) {
+    let (position, range) = tc.draw(hegel::generators::default::<(LabelPosition, InvalidRange)>());
+    let input = SourceInput::try_new("source.rs", "abc\né\nz\n").unwrap();
+    let valid = Span { start: 0, end: 3 };
+    let span = match range {
+        InvalidRange::Reversed => Span { start: 7, end: 1 },
+        InvalidRange::PastEnd => Span { start: 4, end: 10 },
+        InvalidRange::InsideCharacter => Span { start: 5, end: 6 },
+    };
+    let mut findings = shapelint::lint_compiler(
+        &input,
+        &shapelint::Config::default(),
+        &[shapelint::CompilerFinding {
+            item: "example".into(),
+            item_span: valid,
+            span: valid,
+            evidence: shapelint::CompilerEvidence::UnnecessaryFallibility,
+        }],
+    )
+    .unwrap();
+    let [finding] = findings.as_mut_slice() else {
+        panic!("expected one diagnostic")
+    };
+    let label = Label {
+        span,
+        message: "invalid".into(),
+    };
+    match position {
+        LabelPosition::Primary => finding.primary = label,
+        LabelPosition::Context => finding.labels.push(label),
+        LabelPosition::Related => finding.related.push(Related {
+            input: input.clone(),
+            label,
+        }),
+        LabelPosition::Suggestion => finding.footers.push(Footer::Suggestion {
+            message: "edit".into(),
+            span,
+            replacement: String::new(),
+        }),
+    }
+    let output = render(std::slice::from_ref(finding), &input, Style::Plain);
+    assert!(output.contains(&finding.message));
+    assert!(output.contains("invalid source span"));
+    assert!(output.contains("source.rs"));
+}
+
 fn full_source(finding: &Finding, input: &SourceInput, style: Style) -> String {
     let renderer = match style {
         Style::Plain => Renderer::plain(),

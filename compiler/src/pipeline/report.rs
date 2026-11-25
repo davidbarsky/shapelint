@@ -2,6 +2,7 @@
 
 mod boundaries;
 mod evaluator;
+mod reviews;
 
 use rustc_abi::FieldIdx;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
@@ -308,8 +309,14 @@ impl<'g> EstablishedCheck<'g> {
 }
 
 #[derive(Clone, Copy)]
+enum ProductionKind {
+    Construction,
+    Return,
+}
+
 struct Production<'g> {
     producer: DefId,
+    production_kind: ProductionKind,
     value: ExprId<'g>,
     guards: Sequence<'g, ConditionId<'g>>,
 }
@@ -748,6 +755,7 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
                     .or_default()
                     .push(Production {
                         producer,
+                        production_kind: ProductionKind::Construction,
                         value: construction.value,
                         guards: construction.guards,
                     });
@@ -757,6 +765,7 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
                 for returned in graph.items(summary.returns) {
                     productions.entry(owner).or_default().push(Production {
                         producer,
+                        production_kind: ProductionKind::Return,
                         value: returned.value,
                         guards: returned.guards,
                     });
@@ -816,7 +825,9 @@ impl<'g> Evaluator<'_, '_, 'g> {
         context: &mut ReportContext<'_, '_, 'g>,
         scope: crate::callers::Scope,
     ) -> Result<Vec<(LocalDefId, states::Finding)>, CapacityError> {
-        self.boundary_findings(context, scope)
+        let mut findings = self.review_findings(context)?;
+        findings.extend(self.boundary_findings(context, scope)?);
+        Ok(findings)
     }
 }
 

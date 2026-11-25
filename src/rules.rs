@@ -76,6 +76,11 @@ pub const RULES: &[Rule] = &[
         summary: "every call forwards the same field to a private function that uses it to decide how to handle another input (compiler driver only)",
     },
     Rule {
+        id: "correlated-state",
+        set: RuleSet::Lints,
+        summary: "constructed fields preserve an implication not encoded by their types",
+    },
+    Rule {
         id: "serialization-detour",
         set: RuleSet::Lints,
         summary: "typed data is serialized and reconstructed without crossing a boundary",
@@ -101,6 +106,11 @@ pub const RULES: &[Rule] = &[
         summary: "test cfg or tests under src create a separate production path",
     },
     Rule {
+        id: "unnecessary-fallibility",
+        set: RuleSet::Lints,
+        summary: "every modeled normal return is Ok (compiler driver only)",
+    },
+    Rule {
         id: "unnecessary-optionality",
         set: RuleSet::Lints,
         summary: "all callers of a private parameter supply the optional payload (compiler driver only)",
@@ -109,6 +119,21 @@ pub const RULES: &[Rule] = &[
         id: "invalidated-validation",
         set: RuleSet::Lints,
         summary: "a mutation invalidates a consumer guarantee (compiler driver only)",
+    },
+    Rule {
+        id: "duplicated-state",
+        set: RuleSet::Lints,
+        summary: "private fields encode the same state (compiler driver only)",
+    },
+    Rule {
+        id: "loop-invariant-check",
+        set: RuleSet::Lints,
+        summary: "a loop repeats a check with unchanged inputs (compiler driver only)",
+    },
+    Rule {
+        id: "equivalent-implementation",
+        set: RuleSet::Lints,
+        summary: "pure acyclic implementations have equivalent typed results (compiler driver only)",
     },
     Rule {
         id: "redundant-check",

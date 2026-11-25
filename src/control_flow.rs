@@ -52,6 +52,9 @@ pub enum CompilerEvidence {
         parameter: String,
         chain: Vec<Related>,
     },
+    CorrelatedState {
+        relation: String,
+    },
     SerializationDetour {
         origin: Related,
     },
@@ -67,6 +70,7 @@ pub enum CompilerEvidence {
         condition: String,
         origin: Related,
     },
+    UnnecessaryFallibility,
     UnnecessaryOptionality {
         parameter: String,
         callers: Vec<Related>,
@@ -74,6 +78,15 @@ pub enum CompilerEvidence {
     InvalidatedValidation {
         condition: String,
         mutation: Related,
+    },
+    DuplicatedState {
+        relation: String,
+    },
+    LoopInvariantCheck {
+        condition: String,
+    },
+    EquivalentImplementation {
+        original: Related,
     },
     RedundantCheck {
         condition: String,
@@ -205,6 +218,9 @@ pub fn lint_compiler(
                 for origin in chain { report = report.related(origin.clone()); }
                 ("option-plumbing", report)
             }
+            CompilerEvidence::CorrelatedState { relation } => ("correlated-state", Report::new("these independently stored fields have a construction invariant", *span, relation)
+                .note("All modeled constructions and returns preserve this implication; private fields and mutation checks bound this conclusion. This is an inferred representation constraint, not a proven failing call.")
+                .help("Use variants carrying the fields permitted in each state.")),
             CompilerEvidence::SerializationDetour { origin } => ("serialization-detour", Report::new("a typed value is serialized and immediately reconstructed", *span, "deserializes back into the original type")
                 .related(origin.clone())
                 .note("The serialized value reaches this decoder without an intervening mutation or external operation.")
@@ -226,6 +242,9 @@ pub fn lint_compiler(
             CompilerEvidence::DiscardedValidation { condition, origin } => ("discarded-validation", Report::new("an earlier validator already establishes this recovery condition", *span, condition)
                 .related(origin.clone())
                 .help("Return a value that carries the validated invariant and consume it without revalidation.")),
+            CompilerEvidence::UnnecessaryFallibility => ("unnecessary-fallibility", Report::new("this function has no modeled error return", *span, "every normal return is Ok")
+                .note("All reachable return alternatives were resolved; this does not claim the function cannot panic or diverge.")
+                .help("Consider returning the successful value directly and removing the unnecessary error handling at callers.")),
             CompilerEvidence::UnnecessaryOptionality { parameter, callers } => {
                 let mut report = Report::new("every caller supplies the optional payload", *span, format!("`{parameter}` is always Some"))
                     .help("Accept the payload directly and remove the Some wrappers at the callers.");
@@ -236,6 +255,16 @@ pub fn lint_compiler(
                 .related(mutation.clone())
                 .note("This identifies a lost guarantee, not proof that the operation fails.")
                 .help("Establish the requirement after the mutation, or move the mutation before validation.")),
+            CompilerEvidence::DuplicatedState { relation } => ("duplicated-state", Report::new("these fields encode the same state", *span, relation)
+                .note("Every modeled construction establishes this relation; the fields are private and no mutable escape or transition was observed.")
+                .help("Keep the payload in one state representation and derive the redundant fact from it.")),
+            CompilerEvidence::LoopInvariantCheck { condition } => ("loop-invariant-check", Report::new("this loop repeats a check whose inputs do not change", *span, condition)
+                .note("The modeled loop writes do not affect this check's inputs.")
+                .help("Consider checking once outside the loop; preserve zero-iteration behavior and condition evaluation effects.")),
+            CompilerEvidence::EquivalentImplementation { original } => ("equivalent-implementation", Report::new("these implementations have the same modeled behavior", *span, "same typed result for each modeled input")
+                .related(original.clone())
+                .note("Both implementations are acyclic and have no modeled observable effects or unresolved checks; this comparison includes their branch conditions.")
+                .help("Consolidate the shared operation into one implementation.")),
             CompilerEvidence::RedundantCheck { condition, outcome, established, origin } => {
                 let mut report = Report::new("incoming facts already decide this check", *span, format!("{condition}: {outcome}"))
                     .note(established)
