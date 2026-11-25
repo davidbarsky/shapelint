@@ -230,6 +230,11 @@ pub(crate) trait StoreValue<T> {
     fn intern_value(&mut self, value: T) -> Result<Self::Id, CapacityError>;
 }
 
+pub(crate) trait ExportValue<I> {
+    type Output;
+    fn export_value(&self, id: I) -> Self::Output;
+}
+
 impl<'g, N: InternNode<'g>> StoreValue<N> for Values<'g> {
     type Id = N::Id;
     fn intern_value(&mut self, node: N) -> Result<Self::Id, CapacityError> {
@@ -251,6 +256,13 @@ impl<'g> StoreValue<&calls::Instance> for Values<'g> {
     }
 }
 
+impl<'g> ExportValue<InstanceId<'g>> for Values<'g> {
+    type Output = calls::Instance;
+    fn export_value(&self, id: InstanceId<'g>) -> calls::Instance {
+        self.export_instance(id)
+    }
+}
+
 impl<'g> StoreValue<&calls::Type> for Values<'g> {
     type Id = TypeId<'g>;
     fn intern_value(&mut self, value: &calls::Type) -> Result<Self::Id, CapacityError> {
@@ -258,10 +270,24 @@ impl<'g> StoreValue<&calls::Type> for Values<'g> {
     }
 }
 
+impl<'g> ExportValue<TypeId<'g>> for Values<'g> {
+    type Output = calls::Type;
+    fn export_value(&self, id: TypeId<'g>) -> calls::Type {
+        self.export_type(id)
+    }
+}
+
 impl<'g> StoreValue<&Origin> for Values<'g> {
     type Id = OriginId<'g>;
     fn intern_value(&mut self, value: &Origin) -> Result<Self::Id, CapacityError> {
         self.intern_origin(value)
+    }
+}
+
+impl<'g> ExportValue<OriginId<'g>> for Values<'g> {
+    type Output = Origin;
+    fn export_value(&self, id: OriginId<'g>) -> Origin {
+        self.export_origin(id)
     }
 }
 

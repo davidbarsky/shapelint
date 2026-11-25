@@ -29,3 +29,4 @@ pub mod persistent;
 pub mod pipeline;
 pub mod sequence;
 pub mod values;
+pub use pipeline::artifacts;

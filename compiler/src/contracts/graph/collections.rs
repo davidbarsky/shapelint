@@ -40,6 +40,17 @@ impl<'g> Graph<'g> {
         std::iter::from_fn(move || cursor.next(self))
     }
 
+    pub(crate) fn argument_set(
+        &mut self,
+        positions: impl IntoIterator<Item = usize>,
+    ) -> Result<SetId<'g, usize>, CapacityError> {
+        positions
+            .into_iter()
+            .try_fold(SetId::EMPTY, |set, position| {
+                self.input_sets.insert(set, position)
+            })
+    }
+
     pub(crate) fn independent_arguments(
         &mut self,
         left: SetId<'g, usize>,
@@ -106,6 +117,16 @@ where
     type Id = <Values<'g> as values::StoreValue<T>>::Id;
     fn intern_value(&mut self, value: T) -> Result<Self::Id, CapacityError> {
         self.values.intern_value(value)
+    }
+}
+
+impl<'g, I> values::ExportValue<I> for Graph<'g>
+where
+    Values<'g>: values::ExportValue<I>,
+{
+    type Output = <Values<'g> as values::ExportValue<I>>::Output;
+    fn export_value(&self, id: I) -> Self::Output {
+        self.values.export_value(id)
     }
 }
 
