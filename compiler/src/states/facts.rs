@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use rustc_middle::mir::{Body, Local, Place};
 use rustc_middle::ty::{self, TyCtxt};
 
@@ -1052,13 +1052,15 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
         let mut next = *self;
         let before = stores.nodes.len(next.nodes);
         let mut pending = Vec::new();
+        // Pending node writes, read before `next.nodes` and committed once per key.
+        let mut writes: FxIndexMap<NodeId<'g>, Active<'s, 'g, R>> = FxIndexMap::default();
         match stores.nodes.get(next.nodes, &node) {
             Some(active) => {
                 let mut active = active.clone();
                 stores
                     .root_sets
                     .insert(&mut active.roots, root.clone(), ())?;
-                stores.nodes.insert(&mut next.nodes, node, active)?;
+                writes.insert(node, active);
             }
             None => pending.push(Work::Visit(node)),
         }
@@ -1066,7 +1068,10 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
         while let Some(work) = pending.pop() {
             match work {
                 Work::Visit(node) => {
-                    if let Some(_) = stores.nodes.get(next.nodes, &node) {
+                    if let Some(_) = writes
+                        .get(&node)
+                        .or_else(|| stores.nodes.get(next.nodes, &node))
+                    {
                         continue;
                     }
                     let children = children(graph, node);
@@ -1075,7 +1080,10 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                     pending.insert(position, Work::Build(node, children));
                 }
                 Work::Build(node, children) => {
-                    if let Some(_) = stores.nodes.get(next.nodes, &node) {
+                    if let Some(_) = writes
+                        .get(&node)
+                        .or_else(|| stores.nodes.get(next.nodes, &node))
+                    {
                         continue;
                     }
                     let mut location = match node {
@@ -1087,9 +1095,9 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                         NodeId::Condition(_) | NodeId::Choice(_) => None,
                     };
                     for child in children {
-                        let mut active = stores
-                            .nodes
-                            .get(next.nodes, &child)
+                        let mut active = writes
+                            .get(&child)
+                            .or_else(|| stores.nodes.get(next.nodes, &child))
                             .expect("child is active")
                             .clone();
                         if let NodeId::Expr(id) = node
@@ -1112,14 +1120,13 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                                 )?;
                             }
                         }
-                        stores.nodes.insert(&mut next.nodes, child, active)?;
+                        writes.insert(child, active);
                     }
                     let mut roots = Set::EMPTY;
                     if node == root_node {
                         stores.root_sets.insert(&mut roots, root.clone(), ())?;
                     }
-                    stores.nodes.insert(
-                        &mut next.nodes,
+                    writes.insert(
                         node,
                         Active {
                             transparent_parents: Set::EMPTY,
@@ -1127,7 +1134,7 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                             roots,
                             location,
                         },
-                    )?;
+                    );
                     if let Some(local) = local(graph, node) {
                         let mut nodes = stores
                             .locals
@@ -1139,6 +1146,9 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                     }
                 }
             }
+        }
+        for (node, active) in writes {
+            stores.nodes.insert(&mut next.nodes, node, active)?;
         }
         let attached = stores.nodes.len(next.nodes) - before;
         if let Some(previous) = stores.roots.insert(&mut next.roots, root.clone(), node)? {
@@ -1173,10 +1183,18 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
             .expect("node is active")
             .clone();
         stores.root_sets.remove(&mut active.roots, root)?;
-        stores.nodes.insert(&mut self.nodes, node, active)?;
+        // Pending writes, read before `self`; `None` is a removal. Committed once per key.
+        let mut node_writes: FxIndexMap<NodeId<'g>, Option<Active<'s, 'g, R>>> =
+            FxIndexMap::default();
+        let mut local_writes: FxIndexMap<Local, Option<Set<'s, NodeId<'g>>>> =
+            FxIndexMap::default();
+        node_writes.insert(node, Some(active));
         let mut pending = vec![node];
         while let Some(node) = pending.pop() {
-            let Some(active) = stores.nodes.get(self.nodes, &node) else {
+            let Some(active) = (match node_writes.get(&node) {
+                Some(written) => written.as_ref(),
+                None => stores.nodes.get(self.nodes, &node),
+            }) else {
                 continue;
             };
             if stores.node_sets.len(active.transparent_parents) != 0
@@ -1186,25 +1204,27 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                 continue;
             }
             let location = active.location;
-            stores.nodes.remove(&mut self.nodes, &node)?;
+            node_writes.insert(node, None);
             if let Some(local) = local(graph, node) {
-                let mut nodes = *stores
-                    .locals
-                    .get(self.locals, &local)
-                    .expect("local nodes exist");
+                let mut nodes = *(match local_writes.get(&local) {
+                    Some(written) => written.as_ref(),
+                    None => stores.locals.get(self.locals, &local),
+                })
+                .expect("local nodes exist");
                 stores.node_sets.remove(&mut nodes, &node)?;
                 if stores.node_sets.len(nodes) == 0 {
-                    stores.locals.remove(&mut self.locals, &local)?;
+                    local_writes.insert(local, None);
                 } else {
-                    stores.locals.insert(&mut self.locals, local, nodes)?;
+                    local_writes.insert(local, Some(nodes));
                 }
             }
             for child in children(graph, node) {
-                let mut active = stores
-                    .nodes
-                    .get(self.nodes, &child)
-                    .expect("child is active")
-                    .clone();
+                let mut active = (match node_writes.get(&child) {
+                    Some(written) => written.as_ref(),
+                    None => stores.nodes.get(self.nodes, &child),
+                })
+                .expect("child is active")
+                .clone();
                 match (location, node) {
                     (Some(_), NodeId::Expr(id)) => {
                         stores.expr_sets.remove(&mut active.location_fields, &id)?;
@@ -1215,8 +1235,28 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                             .remove(&mut active.transparent_parents, &node)?;
                     }
                 }
-                stores.nodes.insert(&mut self.nodes, child, active)?;
+                node_writes.insert(child, Some(active));
                 pending.push(child);
+            }
+        }
+        for (node, active) in node_writes {
+            match active {
+                Some(active) => {
+                    stores.nodes.insert(&mut self.nodes, node, active)?;
+                }
+                None => {
+                    stores.nodes.remove(&mut self.nodes, &node)?;
+                }
+            }
+        }
+        for (local, nodes) in local_writes {
+            match nodes {
+                Some(nodes) => {
+                    stores.locals.insert(&mut self.locals, local, nodes)?;
+                }
+                None => {
+                    stores.locals.remove(&mut self.locals, &local)?;
+                }
             }
         }
         Ok(())
