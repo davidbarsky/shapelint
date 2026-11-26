@@ -1520,9 +1520,13 @@ pub fn analyze<'tcx, 'g>(
         let mut discriminants = DiscriminantIndex::default();
         while let Some(block) = pending.pop() {
             let mut merged = prefixes[block].fold(&mut prefix_maps, |current, state| {
+                work.merges = work.merges.saturating_add(1);
+                // Merging an interned state with itself returns it unchanged and attaches nothing.
+                if *current == *state {
+                    return Ok(());
+                }
                 let mut left = states[*current];
                 let right = states[*state];
-                work.merges = work.merges.saturating_add(1);
                 work.attachments = work.attachments.saturating_add(left.merge(
                     right,
                     body.source.def_id(),
@@ -1536,16 +1540,18 @@ pub fn analyze<'tcx, 'g>(
             if headers.contains_key(&block)
                 && let (Some(previous), Some(next)) = (incoming.get(&block), &mut merged)
             {
-                let mut widened = states[*previous];
                 work.merges = work.merges.saturating_add(1);
-                work.attachments = work.attachments.saturating_add(widened.merge(
-                    states[*next],
-                    body.source.def_id(),
-                    Join::Widen,
-                    &mut graph,
-                    &mut context,
-                )?);
-                *next = states.intern(widened)?;
+                if *previous != *next {
+                    let mut widened = states[*previous];
+                    work.attachments = work.attachments.saturating_add(widened.merge(
+                        states[*next],
+                        body.source.def_id(),
+                        Join::Widen,
+                        &mut graph,
+                        &mut context,
+                    )?);
+                    *next = states.intern(widened)?;
+                }
             }
             if incoming.get(&block) == merged.as_ref() {
                 continue;

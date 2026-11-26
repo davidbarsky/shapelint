@@ -321,17 +321,22 @@ struct Production<'g> {
     guards: Sequence<'g, ConditionId<'g>>,
 }
 
+#[derive(Default)]
+struct OwnerFacts<'g> {
+    productions: Vec<Production<'g>>,
+    constructors: Vec<(DefId, summaries::SummaryId<'g>)>,
+    mutation: Option<()>,
+}
+
 struct ReportContext<'a, 'tcx, 'g> {
     sources: &'a diagnostics::Sources,
     restorer: std::cell::RefCell<crate::values::Restorer<'tcx, 'g>>,
     tcx: TyCtxt<'tcx>,
     call_index: &'a crate::callers::CallIndex<'a, 'g>,
     summaries: &'a FxHashMap<DefId, summaries::SummaryId<'g>>,
-    constructors: &'a FxHashMap<DefId, Vec<(DefId, summaries::SummaryId<'g>)>>,
+    owners: &'a FxHashMap<DefId, OwnerFacts<'g>>,
     coverage: &'a FxHashSet<rustc_hir::def_id::CrateNum>,
-    productions: &'a FxHashMap<DefId, Vec<Production<'g>>>,
     resolved_productions: FxHashMap<DefId, Vec<(DefId, Sequence<'g, ConditionId<'g>>, ExprId<'g>)>>,
-    mutations: &'a FxHashSet<DefId>,
     guarantees: FxHashMap<(DefId, ConditionId<'g>), Option<()>>,
 }
 
@@ -491,16 +496,20 @@ impl<'g> Evaluator<'_, '_, 'g> {
             std::collections::hash_map::Entry::Vacant(entry) => entry,
         };
         let guarantee = 'proof: {
-            if context.mutations.contains(&owner) {
+            let Some(facts) = context.owners.get(&owner) else {
+                break 'proof None;
+            };
+            if let Some(()) = facts.mutation {
                 break 'proof None;
             }
             let productions = match context.resolved_productions.entry(owner) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let Some(productions) = context.productions.get(&owner) else {
+                    if facts.productions.is_empty() {
                         break 'proof None;
-                    };
-                    let productions = productions
+                    }
+                    let productions = facts
+                        .productions
                         .iter()
                         .map(|production| {
                             (production.producer, production.value, production.guards)
@@ -587,9 +596,7 @@ struct ReportIndex<'a, 'g> {
     summaries: &'a crate::pipeline::Summaries<'g>,
     ordered_definitions: Vec<(DefId, summaries::SummaryId<'g>)>,
     calls: crate::callers::CallIndex<'a, 'g>,
-    productions: FxHashMap<DefId, Vec<Production<'g>>>,
-    constructors: FxHashMap<DefId, Vec<(DefId, summaries::SummaryId<'g>)>>,
-    mutations: FxHashSet<DefId>,
+    owners: FxHashMap<DefId, OwnerFacts<'g>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -743,16 +750,17 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
     ) -> Result<Self, CapacityError> {
         let definitions = &summaries.definitions;
         let calls = crate::callers::CallIndex::try_new(tcx, definitions, graph)?;
-        let mut productions: FxHashMap<_, Vec<_>> = FxHashMap::default();
-        let mut constructors: FxHashMap<_, Vec<_>> = FxHashMap::default();
-        let mut mutations = FxHashSet::default();
+        let mut owners: FxHashMap<DefId, OwnerFacts<'g>> = FxHashMap::default();
         for (&producer, id) in definitions {
             let summary = graph[*id];
-            mutations.extend(graph.members(summary.mutations));
+            for owner in graph.members(summary.mutations) {
+                owners.entry(owner).or_default().mutation = Some(());
+            }
             for construction in graph.items(summary.constructions) {
-                productions
+                owners
                     .entry(construction.owner)
                     .or_default()
+                    .productions
                     .push(Production {
                         producer,
                         production_kind: ProductionKind::Construction,
@@ -761,9 +769,13 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
                     });
             }
             if let Some(owner) = summary.output {
-                constructors.entry(owner).or_default().push((producer, *id));
+                owners
+                    .entry(owner)
+                    .or_default()
+                    .constructors
+                    .push((producer, *id));
                 for returned in graph.items(summary.returns) {
-                    productions.entry(owner).or_default().push(Production {
+                    owners.entry(owner).or_default().productions.push(Production {
                         producer,
                         production_kind: ProductionKind::Return,
                         value: returned.value,
@@ -784,9 +796,7 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
             summaries,
             ordered_definitions,
             calls,
-            productions,
-            constructors,
-            mutations,
+            owners,
         })
     }
 
@@ -808,11 +818,9 @@ impl<'a, 'g> ReportIndex<'a, 'g> {
             tcx,
             call_index: &self.calls,
             summaries,
-            constructors: &self.constructors,
+            owners: &self.owners,
             coverage: &self.summaries.coverage,
-            productions: &self.productions,
             resolved_productions: FxHashMap::default(),
-            mutations: &self.mutations,
             guarantees: FxHashMap::default(),
         };
         Ok((evaluator, context))
@@ -1093,8 +1101,11 @@ impl<'g> Evaluator<'_, '_, 'g> {
                             let adt = tcx.adt_def(first.owner);
                             let fields = &adt.non_enum_variant().fields;
                             if let None = self.graph.items(guards).next() {
-                                let constructors =
-                                    context.constructors.get(&first.owner).into_iter().flatten();
+                                let constructors = context
+                                    .owners
+                                    .get(&first.owner)
+                                    .into_iter()
+                                    .flat_map(|facts| &facts.constructors);
                                 for &(constructor, id) in constructors {
                                     let summary = self.graph[id];
                                     let Some(constructor_local) = constructor.as_local() else {

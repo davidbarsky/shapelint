@@ -237,6 +237,9 @@ pub struct Maps<'g, K, V, R = Hashed> {
     intersections: Memo<(NodeId, NodeId), Option<NodeId>>,
     keys: Intern<KeyId, K>,
     values: Intern<ValueId, V>,
+    // Reused descent stacks of `insert` and `remove`; cleared before each use.
+    insert_path: Vec<(NodeId, BranchBit, Side, NodeId)>,
+    remove_path: Vec<(BranchBit, Side, NodeId)>,
     brand: PhantomData<fn(&'g mut (K, V, R)) -> &'g mut (K, V, R)>,
 }
 /// Creates an owner whose handles cannot escape or mix with another owner.
@@ -252,6 +255,8 @@ impl<'g, K, V, R> Maps<'g, K, V, R> {
             intersections: Memo::default(),
             keys: Intern::new(),
             values: Intern::new(),
+            insert_path: Vec::new(),
+            remove_path: Vec::new(),
             brand: PhantomData,
         }
     }
@@ -263,6 +268,8 @@ impl<'g, K, V, R> Maps<'g, K, V, R> {
             intersections: self.intersections.clone(),
             keys: self.keys.clone(),
             values: self.values.clone(),
+            insert_path: Vec::new(),
+            remove_path: Vec::new(),
             brand: PhantomData,
         }
     }
@@ -473,7 +480,8 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
             map.root = Some(self.intern_node(Node::Leaf { hash, key, value })?);
             return Ok(None);
         };
-        let mut path = Vec::new();
+        let mut path = std::mem::take(&mut self.insert_path);
+        path.clear();
         let (stored, old_value) = loop {
             match self.nodes.get(id).node {
                 Node::Leaf { hash, key, value } => break (Address { hash, key }, value),
@@ -493,6 +501,7 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
             None => {
                 let previous = Some(self.values.get(old_value).clone());
                 if old_value == value {
+                    self.insert_path = path;
                     return Ok(previous);
                 }
                 (self.intern_node(Node::Leaf { hash, key, value })?, previous)
@@ -519,6 +528,7 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
             };
             result = self.intern_node(Node::Branch { bit, left, right })?;
         }
+        self.insert_path = path;
         map.root = Some(result);
         Ok(previous)
     }
@@ -541,7 +551,8 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
         let Some(mut id) = map.root else {
             return Ok(None);
         };
-        let mut path = Vec::new();
+        let mut path = std::mem::take(&mut self.remove_path);
+        path.clear();
         let previous = loop {
             match self.nodes.get(id).node {
                 Node::Leaf {
@@ -550,6 +561,7 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
                     value,
                 } => {
                     if own != hash || self.keys.get(own_key) != key {
+                        self.remove_path = path;
                         return Ok(None);
                     }
                     break self.values.get(value).clone();
@@ -579,6 +591,7 @@ impl<'g, K: Eq + Hash, V: Eq + Hash, R: Routing<K>> Maps<'g, K, V, R> {
         } else {
             None
         };
+        self.remove_path = path;
         map.root = result;
         Ok(Some(previous))
     }

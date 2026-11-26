@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use rustc_middle::mir::{Body, Local, Place};
 use rustc_middle::ty::{self, TyCtxt};
 
@@ -530,15 +530,14 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
         graph: &Graph<'g>,
         context: &mut Context<'tcx, 's, 'g>,
     ) -> Result<(), CapacityError> {
-        let places: Vec<_> = context
-            .symbols
-            .iter(self.data.symbols)
-            .map(|(place, _)| *place)
-            .collect();
-        for place in places {
-            self.dependencies
-                .remove(&mut context.dependencies, &Root::Symbol(place), graph)?;
-        }
+        self.dependencies.remove_all(
+            &mut context.dependencies,
+            context
+                .symbols
+                .iter(self.data.symbols)
+                .map(|(place, _)| Root::Symbol(*place)),
+            graph,
+        )?;
         self.places = Places::default();
         self.data.symbols = Map::EMPTY;
         Ok(())
@@ -549,18 +548,14 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
         graph: &Graph<'g>,
         context: &mut Context<'tcx, 's, 'g>,
     ) -> Result<(), CapacityError> {
-        let conditions: Vec<_> = context
-            .condition_counts
-            .iter(self.condition_counts)
-            .map(|(condition, _)| *condition)
-            .collect();
-        for condition in conditions {
-            self.dependencies.remove(
-                &mut context.dependencies,
-                &Root::Condition(condition),
-                graph,
-            )?;
-        }
+        self.dependencies.remove_all(
+            &mut context.dependencies,
+            context
+                .condition_counts
+                .iter(self.condition_counts)
+                .map(|(condition, _)| Root::Condition(*condition)),
+            graph,
+        )?;
         self.data.conditions = Sequence::default();
         self.condition_counts = Map::EMPTY;
         Ok(())
@@ -572,11 +567,17 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
         graph: &Graph<'g>,
         context: &mut Context<'tcx, 's, 'g>,
     ) -> Result<(), CapacityError> {
-        for key in context
+        let keys = context
             .paths
-            .overlapping(&self.places, place, Overlap::Prefixes)
-        {
-            self.remove(&key, graph, context)?;
+            .overlapping(&self.places, place, Overlap::Prefixes);
+        self.dependencies.remove_all(
+            &mut context.dependencies,
+            keys.iter().map(|key| Root::Symbol(*key)),
+            graph,
+        )?;
+        for key in &keys {
+            context.paths.remove(&mut self.places, key)?;
+            context.symbols.remove(&mut self.data.symbols, key)?;
         }
         Ok(())
     }
@@ -655,6 +656,7 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
         graph: &mut Graph<'g>,
         context: &mut Context<'tcx, 's, 'g>,
     ) -> Result<ExprId<'g>, CapacityError> {
+        let dependencies = self.dependencies;
         self.dependencies.insert(
             &mut context.dependencies,
             Root::Transient,
@@ -665,8 +667,9 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
             .dependencies
             .affected(&mut context.dependencies, change, graph)?;
         let result = graph.invalidate_expr(value, change, affected);
-        self.dependencies
-            .remove(&mut context.dependencies, &Root::Transient, graph)?;
+        // The transient root is absent before the insert, and detaching it removes exactly what
+        // the insert attached, so restoring the canonical handles equals the removal.
+        self.dependencies = dependencies;
         result
     }
 
@@ -748,17 +751,10 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
             )?,
             None => 0,
         };
-        for condition in removed_conditions {
+        for condition in &removed_conditions {
             context
                 .condition_counts
-                .remove(&mut self.condition_counts, &condition)?;
-            if Some(condition) != additional {
-                self.dependencies.remove(
-                    &mut context.dependencies,
-                    &Root::Condition(condition),
-                    graph,
-                )?;
-            }
+                .remove(&mut self.condition_counts, condition)?;
         }
         if let Some(condition) = additional {
             let count = context
@@ -774,12 +770,16 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
         }
         for fact in removed_lost.keys() {
             context.lost_counts.remove(&mut self.lost_counts, fact)?;
-            self.dependencies.remove(
-                &mut context.dependencies,
-                &Root::Lost(fact.clone()),
-                graph,
-            )?;
         }
+        self.dependencies.remove_all(
+            &mut context.dependencies,
+            removed_conditions
+                .into_iter()
+                .filter(|condition| Some(*condition) != additional)
+                .map(Root::Condition)
+                .chain(removed_lost.keys().map(|fact| Root::Lost(fact.clone()))),
+            graph,
+        )?;
         self.data.conditions = conditions;
         self.data.lost = lost;
         Ok(attached)
@@ -912,30 +912,27 @@ impl<'tcx, 's, 'g> Facts<'tcx, 's, 'g> {
                 graph,
             )?;
         }
-        for (condition, difference) in Differences::from((
+        let retired_conditions = Differences::from((
             &context.condition_counts,
             self.condition_counts,
             condition_counts,
-        )) {
-            if let Difference::Left(_) = difference {
-                self.dependencies.remove(
-                    &mut context.dependencies,
-                    &Root::Condition(*condition),
-                    graph,
-                )?;
-            }
-        }
-        for (fact, difference) in
-            Differences::from((&context.lost_counts, self.lost_counts, lost_counts))
-        {
-            if let Difference::Left(_) = difference {
-                self.dependencies.remove(
-                    &mut context.dependencies,
-                    &Root::Lost(fact.clone()),
-                    graph,
-                )?;
-            }
-        }
+        ))
+        .filter_map(|(condition, difference)| match difference {
+            Difference::Left(_) => Some(Root::Condition(*condition)),
+            Difference::Right(_) | Difference::Both(..) => None,
+        });
+        let retired_lost =
+            Differences::from((&context.lost_counts, self.lost_counts, lost_counts)).filter_map(
+                |(fact, difference)| match difference {
+                    Difference::Left(_) => Some(Root::Lost(fact.clone())),
+                    Difference::Right(_) | Difference::Both(..) => None,
+                },
+            );
+        self.dependencies.remove_all(
+            &mut context.dependencies,
+            retired_conditions.chain(retired_lost),
+            graph,
+        )?;
         self.condition_counts = condition_counts;
         self.lost_counts = lost_counts;
         self.data.conditions = next_conditions;
@@ -1052,13 +1049,15 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
         let mut next = *self;
         let before = stores.nodes.len(next.nodes);
         let mut pending = Vec::new();
+        // Pending node writes, read before `next.nodes` and committed once per key.
+        let mut writes: FxIndexMap<NodeId<'g>, Active<'s, 'g, R>> = FxIndexMap::default();
         match stores.nodes.get(next.nodes, &node) {
             Some(active) => {
                 let mut active = active.clone();
                 stores
                     .root_sets
                     .insert(&mut active.roots, root.clone(), ())?;
-                stores.nodes.insert(&mut next.nodes, node, active)?;
+                writes.insert(node, active);
             }
             None => pending.push(Work::Visit(node)),
         }
@@ -1066,7 +1065,10 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
         while let Some(work) = pending.pop() {
             match work {
                 Work::Visit(node) => {
-                    if let Some(_) = stores.nodes.get(next.nodes, &node) {
+                    if let Some(_) = writes
+                        .get(&node)
+                        .or_else(|| stores.nodes.get(next.nodes, &node))
+                    {
                         continue;
                     }
                     let children = children(graph, node);
@@ -1075,7 +1077,10 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                     pending.insert(position, Work::Build(node, children));
                 }
                 Work::Build(node, children) => {
-                    if let Some(_) = stores.nodes.get(next.nodes, &node) {
+                    if let Some(_) = writes
+                        .get(&node)
+                        .or_else(|| stores.nodes.get(next.nodes, &node))
+                    {
                         continue;
                     }
                     let mut location = match node {
@@ -1087,9 +1092,9 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                         NodeId::Condition(_) | NodeId::Choice(_) => None,
                     };
                     for child in children {
-                        let mut active = stores
-                            .nodes
-                            .get(next.nodes, &child)
+                        let mut active = writes
+                            .get(&child)
+                            .or_else(|| stores.nodes.get(next.nodes, &child))
                             .expect("child is active")
                             .clone();
                         if let NodeId::Expr(id) = node
@@ -1112,14 +1117,13 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                                 )?;
                             }
                         }
-                        stores.nodes.insert(&mut next.nodes, child, active)?;
+                        writes.insert(child, active);
                     }
                     let mut roots = Set::EMPTY;
                     if node == root_node {
                         stores.root_sets.insert(&mut roots, root.clone(), ())?;
                     }
-                    stores.nodes.insert(
-                        &mut next.nodes,
+                    writes.insert(
                         node,
                         Active {
                             transparent_parents: Set::EMPTY,
@@ -1127,7 +1131,7 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                             roots,
                             location,
                         },
-                    )?;
+                    );
                     if let Some(local) = local(graph, node) {
                         let mut nodes = stores
                             .locals
@@ -1140,9 +1144,22 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                 }
             }
         }
+        for (node, active) in writes {
+            stores.nodes.insert(&mut next.nodes, node, active)?;
+        }
         let attached = stores.nodes.len(next.nodes) - before;
         if let Some(previous) = stores.roots.insert(&mut next.roots, root.clone(), node)? {
-            next.detach(stores, previous, &root, graph)?;
+            let mut node_writes = FxIndexMap::default();
+            let mut local_writes = FxIndexMap::default();
+            next.detach(
+                stores,
+                previous,
+                &root,
+                graph,
+                &mut node_writes,
+                &mut local_writes,
+            )?;
+            next.commit(stores, node_writes, local_writes)?;
         }
         *self = next;
         Ok(attached)
@@ -1155,28 +1172,71 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
     ) -> Result<(), CapacityError> {
         let mut next = *self;
         if let Some(node) = stores.roots.remove(&mut next.roots, root)? {
-            next.detach(stores, node, root, graph)?;
+            let mut node_writes = FxIndexMap::default();
+            let mut local_writes = FxIndexMap::default();
+            next.detach(
+                stores,
+                node,
+                root,
+                graph,
+                &mut node_writes,
+                &mut local_writes,
+            )?;
+            next.commit(stores, node_writes, local_writes)?;
             *self = next;
         }
         Ok(())
     }
-    fn detach(
+    /// Detaches every listed root, committing the combined node and local writes once.
+    pub fn remove_all(
         &mut self,
+        stores: &mut DependencyStores<'s, 'g, R>,
+        roots: impl IntoIterator<Item = R>,
+        graph: &Graph<'g>,
+    ) -> Result<(), CapacityError> {
+        let mut next = *self;
+        let mut node_writes = FxIndexMap::default();
+        let mut local_writes = FxIndexMap::default();
+        for root in roots {
+            if let Some(node) = stores.roots.remove(&mut next.roots, &root)? {
+                next.detach(
+                    stores,
+                    node,
+                    &root,
+                    graph,
+                    &mut node_writes,
+                    &mut local_writes,
+                )?;
+            }
+        }
+        next.commit(stores, node_writes, local_writes)?;
+        *self = next;
+        Ok(())
+    }
+    /// Records the writes in the overlays, which are read before `self`; `None` is a removal.
+    fn detach(
+        &self,
         stores: &mut DependencyStores<'s, 'g, R>,
         node: NodeId<'g>,
         root: &R,
         graph: &Graph<'g>,
+        node_writes: &mut FxIndexMap<NodeId<'g>, Option<Active<'s, 'g, R>>>,
+        local_writes: &mut FxIndexMap<Local, Option<Set<'s, NodeId<'g>>>>,
     ) -> Result<(), CapacityError> {
-        let mut active = stores
-            .nodes
-            .get(self.nodes, &node)
-            .expect("node is active")
-            .clone();
+        let mut active = (match node_writes.get(&node) {
+            Some(written) => written.as_ref(),
+            None => stores.nodes.get(self.nodes, &node),
+        })
+        .expect("node is active")
+        .clone();
         stores.root_sets.remove(&mut active.roots, root)?;
-        stores.nodes.insert(&mut self.nodes, node, active)?;
+        node_writes.insert(node, Some(active));
         let mut pending = vec![node];
         while let Some(node) = pending.pop() {
-            let Some(active) = stores.nodes.get(self.nodes, &node) else {
+            let Some(active) = (match node_writes.get(&node) {
+                Some(written) => written.as_ref(),
+                None => stores.nodes.get(self.nodes, &node),
+            }) else {
                 continue;
             };
             if stores.node_sets.len(active.transparent_parents) != 0
@@ -1186,25 +1246,27 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                 continue;
             }
             let location = active.location;
-            stores.nodes.remove(&mut self.nodes, &node)?;
+            node_writes.insert(node, None);
             if let Some(local) = local(graph, node) {
-                let mut nodes = *stores
-                    .locals
-                    .get(self.locals, &local)
-                    .expect("local nodes exist");
+                let mut nodes = *(match local_writes.get(&local) {
+                    Some(written) => written.as_ref(),
+                    None => stores.locals.get(self.locals, &local),
+                })
+                .expect("local nodes exist");
                 stores.node_sets.remove(&mut nodes, &node)?;
                 if stores.node_sets.len(nodes) == 0 {
-                    stores.locals.remove(&mut self.locals, &local)?;
+                    local_writes.insert(local, None);
                 } else {
-                    stores.locals.insert(&mut self.locals, local, nodes)?;
+                    local_writes.insert(local, Some(nodes));
                 }
             }
             for child in children(graph, node) {
-                let mut active = stores
-                    .nodes
-                    .get(self.nodes, &child)
-                    .expect("child is active")
-                    .clone();
+                let mut active = (match node_writes.get(&child) {
+                    Some(written) => written.as_ref(),
+                    None => stores.nodes.get(self.nodes, &child),
+                })
+                .expect("child is active")
+                .clone();
                 match (location, node) {
                     (Some(_), NodeId::Expr(id)) => {
                         stores.expr_sets.remove(&mut active.location_fields, &id)?;
@@ -1215,8 +1277,37 @@ impl<'s, 'g, R: Clone + Eq + Hash> Dependencies<'s, 'g, R> {
                             .remove(&mut active.transparent_parents, &node)?;
                     }
                 }
-                stores.nodes.insert(&mut self.nodes, child, active)?;
+                node_writes.insert(child, Some(active));
                 pending.push(child);
+            }
+        }
+        Ok(())
+    }
+    /// Commits overlay writes once per key, in first-write order.
+    fn commit(
+        &mut self,
+        stores: &mut DependencyStores<'s, 'g, R>,
+        node_writes: FxIndexMap<NodeId<'g>, Option<Active<'s, 'g, R>>>,
+        local_writes: FxIndexMap<Local, Option<Set<'s, NodeId<'g>>>>,
+    ) -> Result<(), CapacityError> {
+        for (node, active) in node_writes {
+            match active {
+                Some(active) => {
+                    stores.nodes.insert(&mut self.nodes, node, active)?;
+                }
+                None => {
+                    stores.nodes.remove(&mut self.nodes, &node)?;
+                }
+            }
+        }
+        for (local, nodes) in local_writes {
+            match nodes {
+                Some(nodes) => {
+                    stores.locals.insert(&mut self.locals, local, nodes)?;
+                }
+                None => {
+                    stores.locals.remove(&mut self.locals, &local)?;
+                }
             }
         }
         Ok(())

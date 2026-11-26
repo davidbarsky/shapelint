@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::hash::Hash;
 
 use rustc_abi::FieldIdx;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use rustc_index::IndexVec;
 use rustc_middle::mir::{Body, Local, Place, PlaceElem, PlaceTy, ProjectionElem};
 use rustc_middle::ty::{self, TyCtxt};
@@ -144,11 +144,28 @@ where
         paths: &mut Paths<'tcx, 's>,
     ) -> Result<(), CapacityError> {
         paths.insert(&mut self.keys, place, place)?;
-        paths.remove(&mut self.dependencies, &place)?;
-        Table::<()>::table_mut(paths).remove(&mut self.every_write, &place)?;
-        paths.table_mut().remove(&mut self.references, &place)?;
-        paths.remove(&mut self.reference_keys, &place)?;
-        match value.dependency() {
+        let dependency = value.dependency();
+        // An index the place is inserted into below replaces its entry, so only the others drop it.
+        match dependency {
+            Dependency::Place(_) => {}
+            Dependency::None | Dependency::EveryWrite | Dependency::Reference => {
+                paths.remove(&mut self.dependencies, &place)?;
+            }
+        }
+        match dependency {
+            Dependency::EveryWrite => {}
+            Dependency::None | Dependency::Place(_) | Dependency::Reference => {
+                Table::<()>::table_mut(paths).remove(&mut self.every_write, &place)?;
+            }
+        }
+        match dependency {
+            Dependency::Reference => {}
+            Dependency::None | Dependency::Place(_) | Dependency::EveryWrite => {
+                paths.table_mut().remove(&mut self.references, &place)?;
+                paths.remove(&mut self.reference_keys, &place)?;
+            }
+        }
+        match dependency {
             Dependency::Place(dependency) => {
                 paths.insert(&mut self.dependencies, place, dependency)?
             }
@@ -420,6 +437,9 @@ pub(crate) struct Paths<'tcx, 's> {
     place_fields: Maps<'s, FieldIdx, Set<'s, PathId>>,
     path_sets: Sets<'s, PathId>,
     key_sets: Sets<'s, Place<'tcx>>,
+    // Reused write overlays of one `insert` or `remove`; empty between calls.
+    pending_nodes: FxIndexMap<PathId, Option<Branch<'tcx, 's>>>,
+    pending_roots: FxIndexMap<Local, Option<PathId>>,
     pub(in crate::states) prefix_type_steps: usize,
 }
 
@@ -439,6 +459,8 @@ impl<'tcx, 's> Default for Paths<'tcx, 's> {
             place_fields: Maps::new(),
             path_sets: Maps::new(),
             key_sets: Maps::new(),
+            pending_nodes: FxIndexMap::default(),
+            pending_roots: FxIndexMap::default(),
             prefix_type_steps: 0,
         }
     }
@@ -610,27 +632,25 @@ impl<'tcx, 's> Paths<'tcx, 's> {
         key: Place<'tcx>,
         place: Place<'tcx>,
     ) -> Result<(), CapacityError> {
-        let mut next = *places;
-        self.insert_inner(&mut next, key, place)?;
-        *places = next;
-        Ok(())
-    }
-
-    fn insert_inner(
-        &mut self,
-        places: &mut Places<'tcx, 's>,
-        key: Place<'tcx>,
-        place: Place<'tcx>,
-    ) -> Result<(), CapacityError> {
         let path = self.intern(place)?;
-        if self.place_keys.get(places.keys, &key) == Some(&path) {
+        let previous = self.place_keys.get(places.keys, &key).copied();
+        if previous == Some(path) {
             return Ok(());
         }
-        self.remove_inner(places, &key)?;
+        let mut next = *places;
+        let mut nodes = std::mem::take(&mut self.pending_nodes);
+        let mut roots = std::mem::take(&mut self.pending_roots);
+        if let Some(previous) = previous {
+            self.detach(&next, &key, previous, &mut nodes, &mut roots)?;
+        }
         let mut current = path;
         let mut child = None;
         loop {
-            let (mut branch, parent) = match self.place_nodes.get(places.nodes, &current) {
+            let written = match nodes.get(&current) {
+                Some(written) => written.as_ref(),
+                None => self.place_nodes.get(next.nodes, &current),
+            };
+            let (mut branch, parent) = match written {
                 Some(&branch) => (branch, None),
                 None => {
                     let branch = Branch {
@@ -643,8 +663,7 @@ impl<'tcx, 's> Paths<'tcx, 's> {
                     match parent {
                         Some(parent) => (branch, Some(parent)),
                         None => {
-                            self.place_roots
-                                .insert(&mut places.roots, place.local, current)?;
+                            roots.insert(place.local, Some(current));
                             (branch, None)
                         }
                     }
@@ -674,15 +693,18 @@ impl<'tcx, 's> Paths<'tcx, 's> {
                     }
                 }
             }
-            self.place_nodes
-                .insert(&mut places.nodes, current, branch)?;
+            nodes.insert(current, Some(branch));
             let Some((parent, projection)) = parent else {
                 break;
             };
             child = Some((projection, current));
             current = parent;
         }
-        self.place_keys.insert(&mut places.keys, key, path)?;
+        self.commit(&mut next, &mut nodes, &mut roots)?;
+        self.pending_nodes = nodes;
+        self.pending_roots = roots;
+        self.place_keys.insert(&mut next.keys, key, path)?;
+        *places = next;
         Ok(())
     }
 
@@ -692,39 +714,50 @@ impl<'tcx, 's> Paths<'tcx, 's> {
         key: &Place<'tcx>,
     ) -> Result<(), CapacityError> {
         let mut next = *places;
-        self.remove_inner(&mut next, key)?;
+        let Some(current) = self.place_keys.remove(&mut next.keys, key)? else {
+            return Ok(());
+        };
+        let mut nodes = std::mem::take(&mut self.pending_nodes);
+        let mut roots = std::mem::take(&mut self.pending_roots);
+        self.detach(&next, key, current, &mut nodes, &mut roots)?;
+        self.commit(&mut next, &mut nodes, &mut roots)?;
+        self.pending_nodes = nodes;
+        self.pending_roots = roots;
         *places = next;
         Ok(())
     }
 
-    fn remove_inner(
+    /// Records the key's removal in the overlays, which are read before `places`; `None` is a
+    /// removal.
+    fn detach(
         &mut self,
-        places: &mut Places<'tcx, 's>,
+        places: &Places<'tcx, 's>,
         key: &Place<'tcx>,
+        mut current: PathId,
+        nodes: &mut FxIndexMap<PathId, Option<Branch<'tcx, 's>>>,
+        roots: &mut FxIndexMap<Local, Option<PathId>>,
     ) -> Result<(), CapacityError> {
-        let Some(mut current) = self.place_keys.remove(&mut places.keys, key)? else {
-            return Ok(());
-        };
-        let mut branch = *self
-            .place_nodes
-            .get(places.nodes, &current)
-            .expect("path branch exists");
+        let mut branch = *(match nodes.get(&current) {
+            Some(written) => written.as_ref(),
+            None => self.place_nodes.get(places.nodes, &current),
+        })
+        .expect("path branch exists");
         self.key_sets.remove(&mut branch.values, key)?;
         loop {
             if self.key_sets.len(branch.values) != 0
                 || self.place_children.len(branch.children) != 0
             {
-                self.place_nodes
-                    .insert(&mut places.nodes, current, branch)?;
+                nodes.insert(current, Some(branch));
                 break;
             }
-            self.place_nodes.remove(&mut places.nodes, &current)?;
+            nodes.insert(current, None);
             match self.nodes[current].parent {
                 Some((parent, projection)) => {
-                    branch = *self
-                        .place_nodes
-                        .get(places.nodes, &parent)
-                        .expect("parent branch exists");
+                    branch = *(match nodes.get(&parent) {
+                        Some(written) => written.as_ref(),
+                        None => self.place_nodes.get(places.nodes, &parent),
+                    })
+                    .expect("parent branch exists");
                     self.place_children
                         .remove(&mut branch.children, &projection)?;
                     match projection {
@@ -748,9 +781,38 @@ impl<'tcx, 's> Paths<'tcx, 's> {
                     current = parent;
                 }
                 None => {
-                    self.place_roots
-                        .remove(&mut places.roots, &self.nodes[current].local)?;
+                    roots.insert(self.nodes[current].local, None);
                     break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Commits and clears the overlays, writing each key once in first-write order.
+    fn commit(
+        &mut self,
+        places: &mut Places<'tcx, 's>,
+        nodes: &mut FxIndexMap<PathId, Option<Branch<'tcx, 's>>>,
+        roots: &mut FxIndexMap<Local, Option<PathId>>,
+    ) -> Result<(), CapacityError> {
+        for (path, branch) in nodes.drain(..) {
+            match branch {
+                Some(branch) => {
+                    self.place_nodes.insert(&mut places.nodes, path, branch)?;
+                }
+                None => {
+                    self.place_nodes.remove(&mut places.nodes, &path)?;
+                }
+            }
+        }
+        for (local, root) in roots.drain(..) {
+            match root {
+                Some(root) => {
+                    self.place_roots.insert(&mut places.roots, local, root)?;
+                }
+                None => {
+                    self.place_roots.remove(&mut places.roots, &local)?;
                 }
             }
         }
